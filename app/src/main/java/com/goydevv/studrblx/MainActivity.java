@@ -184,6 +184,56 @@ public final class MainActivity extends AppCompatActivity implements MainActions
             MainActivity.openLauncher$lambda$5(MainActivity.this, (Uri) obj);
         }
     });
+    private boolean playPending;
+    private android.app.AlertDialog playLoadingDialog;
+
+    private void dismissPlayLoading() {
+        try {
+            if (this.playLoadingDialog != null && this.playLoadingDialog.isShowing()) {
+                this.playLoadingDialog.dismiss();
+            }
+        } catch (Throwable ignored) {
+        }
+        this.playLoadingDialog = null;
+    }
+
+    private void showPlayLoading(final Studio playStudio) {
+        try {
+            dismissPlayLoading();
+            android.widget.LinearLayout row = new android.widget.LinearLayout(this);
+            row.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+            row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            int pad = com.goydevv.studrblx.ui.Ui.INSTANCE.dp(this, 20.0f);
+            row.setPadding(pad, pad, pad, pad);
+            row.addView(new android.widget.ProgressBar(this));
+            android.widget.TextView tv = com.goydevv.studrblx.ui.Ui.INSTANCE.text(this, "   Starting playtest\u2026", 15.0f, com.goydevv.studrblx.ui.Ui.INSTANCE.getTEXT(), false);
+            row.addView(tv);
+            this.playLoadingDialog = com.goydevv.studrblx.ui.Dialogs.INSTANCE.themed(this)
+                    .setView(row)
+                    .setCancelable(false)
+                    .setNegativeButton("Cancel", new android.content.DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(android.content.DialogInterface d, int which) {
+                            playStudio.stopPlay();
+                        }
+                    })
+                    .create();
+            playStudio.onPlayLoaded = new Runnable() {
+                @Override
+                public void run() {
+                    MainActivity.this.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            MainActivity.this.dismissPlayLoading();
+                        }
+                    });
+                }
+            };
+            this.playLoadingDialog.show();
+        } catch (Throwable ignored) {
+        }
+    }
+
     private final ActivityResultLauncher<String[]> publishPickLauncher = registerForActivityResult(new ActivityResultContracts.OpenDocument(), new ActivityResultCallback() {
         @Override
         public final void onActivityResult(Object obj) {
@@ -192,6 +242,15 @@ public final class MainActivity extends AppCompatActivity implements MainActions
     });
     {
         com.goydevv.studrblx.ui.QuickPublish.launcher = publishPickLauncher;
+    }
+    private final ActivityResultLauncher<String[]> pluginPickLauncher = registerForActivityResult(new ActivityResultContracts.OpenDocument(), new ActivityResultCallback() {
+        @Override
+        public final void onActivityResult(Object obj) {
+            com.goydevv.studrblx.plugins.PluginUi.onFilePicked(MainActivity.this, (Uri) obj);
+        }
+    });
+    {
+        com.goydevv.studrblx.plugins.PluginUi.launcher = pluginPickLauncher;
     }
     private final ActivityResultLauncher<String> createLauncher = registerForActivityResult(new ActivityResultContracts.CreateDocument("application/octet-stream"), new ActivityResultCallback() { // from class: com.goydevv.studrblx.MainActivity$$ExternalSyntheticLambda152
         @Override // androidx.activity.result.ActivityResultCallback
@@ -5063,6 +5122,10 @@ public final class MainActivity extends AppCompatActivity implements MainActions
             Intrinsics.throwUninitializedPropertyAccessException("studio");
             studio = null;
         }
+        if (this.playPending || studio.isPlayStarting()) {
+            android.widget.Toast.makeText(this, "Playtest is still loading\u2026", android.widget.Toast.LENGTH_SHORT).show();
+            return;
+        }
         if (!studio.isPlaying()) {
             showPlace();
             Studio studio3 = this.studio;
@@ -5071,7 +5134,16 @@ public final class MainActivity extends AppCompatActivity implements MainActions
             } else {
                 studio2 = studio3;
             }
-            studio2.startPlay();
+            final Studio playStudio = studio2;
+            this.playPending = true;
+            showPlayLoading(playStudio);
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    MainActivity.this.playPending = false;
+                    playStudio.startPlay();
+                }
+            }, 150L);
             return;
         }
         Studio studio4 = this.studio;
@@ -5824,6 +5896,28 @@ public final class MainActivity extends AppCompatActivity implements MainActions
                 return Unit.INSTANCE;
             }
         }));
+        quickItems.add(9, TuplesKt.to("Plugins\u2026", new Function0() {
+            @Override
+            public final Object invoke() {
+                com.goydevv.studrblx.plugins.PluginUi.show(MainActivity.this, MainActivity.this.studio);
+                return Unit.INSTANCE;
+            }
+        }));
+        try {
+            com.goydevv.studrblx.plugins.NativePlugins.init(this, this.studio);
+            int pluginPos = 10;
+            for (final com.goydevv.studrblx.plugins.NativePlugins.Button pluginBtn : com.goydevv.studrblx.plugins.NativePlugins.buttons()) {
+                String pluginLabel = "\u25B8 " + (pluginBtn.icon.length() > 0 ? pluginBtn.icon + " " : "") + pluginBtn.text + "  (" + com.goydevv.studrblx.plugins.NativePlugins.pluginName(pluginBtn.pluginId) + ")";
+                quickItems.add(pluginPos++, TuplesKt.to(pluginLabel, new Function0() {
+                    @Override
+                    public final Object invoke() {
+                        com.goydevv.studrblx.plugins.NativePlugins.fire(pluginBtn);
+                        return Unit.INSTANCE;
+                    }
+                }));
+            }
+        } catch (Throwable ignoredPlugins) {
+        }
         final List items = quickItems;
         int i = 0;
         for (Object obj : items) {

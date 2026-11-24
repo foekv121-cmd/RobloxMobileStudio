@@ -898,7 +898,12 @@ public final class Studio {
             if (function0Poll == null) {
                 break;
             }
-            function0Poll.invoke();
+            try {
+                function0Poll.invoke();
+            } catch (Throwable jobErr) {
+                OutputLog.INSTANCE.error("Render job failed: " + jobErr);
+                logTopFrames(jobErr);
+            }
             this.lastJobEnd = System.nanoTime();
         }
         if (System.nanoTime() - this.lastJobEnd < 50000000) {
@@ -906,7 +911,18 @@ public final class Studio {
         }
         PlaySession p = this.play;
         if (p != null) {
-            p.step(dt);
+            try {
+                p.step(dt);
+                this.playStepFailures = 0;
+            } catch (Throwable stepErr) {
+                this.playStepFailures++;
+                OutputLog.INSTANCE.error("Playtest error: " + stepErr);
+                logTopFrames(stepErr);
+                if ((stepErr instanceof Error) || this.playStepFailures >= 5) {
+                    failPlay("Playtest stopped after repeated errors", stepErr);
+                    return;
+                }
+            }
             try {
                 AudioEngine.INSTANCE.update(this);
                 return;
@@ -1047,7 +1063,102 @@ public final class Studio {
         }
     }
 
+    private volatile boolean playStarting;
+    private int playStepFailures;
+    public volatile Runnable onPlayLoaded;
+
+    public final boolean isPlayStarting() {
+        return this.playStarting;
+    }
+
+    private static void logTopFrames(Throwable t) {
+        StackTraceElement[] st = t.getStackTrace();
+        for (int i = 0; i < Math.min(st.length, 8); i++) {
+            OutputLog.INSTANCE.error("    at " + st[i]);
+        }
+    }
+
+    private void failPlay(String what, Throwable t) {
+        String msg;
+        if (t instanceof OutOfMemoryError) {
+            msg = what + ": the device ran out of memory. Close other apps or try a smaller place.";
+        } else if (t instanceof StackOverflowError) {
+            msg = what + ": a script or deeply nested object caused a stack overflow.";
+        } else {
+            msg = what + ": " + t;
+        }
+        OutputLog.INSTANCE.error(msg);
+        logTopFrames(t);
+        this.playStarting = false;
+        try {
+            synchronized (this.lock) {
+                PlaySession s = this.play;
+                if (s != null) {
+                    try {
+                        s.stop();
+                    } catch (Throwable ignored) {
+                    }
+                }
+                DataModel pm = this.playModel;
+                if (pm != null) {
+                    try {
+                        pm.getListeners().remove(this.treeListener);
+                    } catch (Throwable ignored) {
+                    }
+                }
+                try {
+                    AudioEngine.INSTANCE.setOnLoaded(null);
+                    AudioEngine.INSTANCE.setOnEnded(null);
+                    AudioEngine.INSTANCE.setOnDidLoop(null);
+                    AudioEngine.INSTANCE.stopAll();
+                } catch (Throwable ignored) {
+                }
+                Instance.onRemovedToNil = null;
+                this.playModel = null;
+                this.play = null;
+                this.selection.clear();
+                this.partsDirty = true;
+                this.camera.setFov(70.0f);
+                this.moveX = 0.0f;
+                this.moveY = 0.0f;
+                for (Listener listener : this.listeners) {
+                    try {
+                        listener.onSelectionChanged();
+                        listener.onModelReplaced();
+                        listener.onPlayStateChanged();
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        Runnable r = this.onPlayLoaded;
+        if (r != null) {
+            try {
+                r.run();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
     public final void startPlay() {
+        if (this.playStarting) {
+            OutputLog.INSTANCE.warn("Playtest is still starting, please wait.");
+            return;
+        }
+        if (isPlaying()) {
+            return;
+        }
+        this.playStarting = true;
+        this.playStepFailures = 0;
+        try {
+            startPlayInner();
+        } catch (Throwable t) {
+            failPlay("Playtest could not start", t);
+        }
+    }
+
+    private final void startPlayInner() {
         synchronized (this.lock) {
             if (isPlaying()) {
                 return;
@@ -1182,8 +1293,13 @@ public final class Studio {
         if (this$0.play == $s) {
             try {
                 $s.start();
-            } catch (Exception e) {
-                OutputLog.INSTANCE.error("Playtest failed to start: " + e);
+                this$0.playStarting = false;
+                Runnable loaded = this$0.onPlayLoaded;
+                if (loaded != null) {
+                    loaded.run();
+                }
+            } catch (Throwable t) {
+                this$0.failPlay("Playtest failed to start", t);
             }
         }
         return Unit.INSTANCE;
@@ -1196,18 +1312,34 @@ public final class Studio {
             if (playSession == null) {
                 return;
             }
-            playSession.stop();
+            try {
+                playSession.stop();
+            } catch (Throwable stopErr) {
+                OutputLog.INSTANCE.error("Playtest stop error: " + stopErr);
+            }
             AudioEngine.INSTANCE.setOnLoaded(null);
             AudioEngine.INSTANCE.setOnEnded(null);
             AudioEngine.INSTANCE.setOnDidLoop(null);
             Instance.onRemovedToNil = null;
-            AudioEngine.INSTANCE.stopAll();
+            try {
+                AudioEngine.INSTANCE.stopAll();
+            } catch (Throwable audioErr) {
+                OutputLog.INSTANCE.error("Audio stop error: " + audioErr);
+            }
             DataModel dataModel = this.playModel;
             if (dataModel != null && (listeners = dataModel.getListeners()) != null) {
                 listeners.remove(this.treeListener);
             }
             this.playModel = null;
             this.play = null;
+            this.playStarting = false;
+            Runnable stoppedCb = this.onPlayLoaded;
+            if (stoppedCb != null) {
+                try {
+                    stoppedCb.run();
+                } catch (Throwable ignoredCb) {
+                }
+            }
             this.selection.clear();
             this.partsDirty = true;
             Triple<Vector3, Float, Float> triple = this.editCamSaved;
