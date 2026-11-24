@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Base.Theme.Mobilestudiotest" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="android:colorBackground">#2e2e2e</item>
+        <item name="android:windowBackground">#2e2e2e</item>
+        <item name="colorAccent">#0e7ace</item>
+        <item name="colorPrimary">#0e7ace</item>
+    </style>
+
+    <style name="Theme.Mobilestudiotest" parent="Base.Theme.Mobilestudiotest" />
+</resources>

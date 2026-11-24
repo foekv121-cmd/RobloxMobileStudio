@@ -1,0 +1,2 @@
+-keep class com.github.luben.zstd.** { *; }
+-keep class org.luaj.vm2.** { *; }
