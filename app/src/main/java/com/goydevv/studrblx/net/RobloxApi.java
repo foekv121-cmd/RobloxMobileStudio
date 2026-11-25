@@ -611,7 +611,7 @@ public final class RobloxApi {
                     } else {
                         iOptInt4 = 0;
                     }
-                    if (tech != null || (jSONObjectOptJSONObject2 = tech.optJSONObject("objectMeshSummary")) == null) {
+                    if (tech == null || (jSONObjectOptJSONObject2 = tech.optJSONObject("objectMeshSummary")) == null) {
                         iOptInt5 = 0;
                     } else {
                         iOptInt5 = jSONObjectOptJSONObject2.optInt("triangles");

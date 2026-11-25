@@ -104,8 +104,8 @@ public final class RobloxGlobals {
                                 cur = parent;
                             } else {
                                 clean = StringsKt.removeSuffix(StringsKt.removeSuffix(name, (CharSequence) ".luau"), (CharSequence) ".lua");
-                                if (cur != null || (instanceFindFirstChild$default = Instance.findFirstChild$default(cur, clean, false, 2, null)) == null) {
-                                    if (cur != null || (strFullName = cur.fullName()) == null) {
+                                if (cur == null || (instanceFindFirstChild$default = Instance.findFirstChild$default(cur, clean, false, 2, null)) == null) {
+                                    if (cur == null || (strFullName = cur.fullName()) == null) {
                                         strFullName = "nil";
                                     }
                                     throw new LuaError("require(\"" + path + "\"): " + clean + " is not a child of " + strFullName);
