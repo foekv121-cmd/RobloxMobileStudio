@@ -5915,9 +5915,16 @@ public final class MainActivity extends AppCompatActivity implements MainActions
                 return Unit.INSTANCE;
             }
         }));
+        quickItems.add(10, TuplesKt.to("Animator\u2026 (animate a model)", new Function0() {
+            @Override
+            public final Object invoke() {
+                com.goydevv.studrblx.ui.AnimatorUi.show(MainActivity.this, MainActivity.this.studio);
+                return Unit.INSTANCE;
+            }
+        }));
         try {
             com.goydevv.studrblx.plugins.NativePlugins.init(this, this.studio);
-            int pluginPos = 10;
+            int pluginPos = 11;
             for (final com.goydevv.studrblx.plugins.NativePlugins.Button pluginBtn : com.goydevv.studrblx.plugins.NativePlugins.buttons()) {
                 String pluginLabel = "\u25B8 " + (pluginBtn.icon.length() > 0 ? pluginBtn.icon + " " : "") + pluginBtn.text + "  (" + com.goydevv.studrblx.plugins.NativePlugins.pluginName(pluginBtn.pluginId) + ")";
                 quickItems.add(pluginPos++, TuplesKt.to(pluginLabel, new Function0() {
