@@ -32,7 +32,9 @@ final class PluginPanels {
         TextView body = ui.text(act, text, 13.0f, ui.getTEXT(), false);
         body.setSingleLine(false);
         body.setTextIsSelectable(true);
-        root.addView(body);
+        if (text != null && text.length() > 0) {
+            root.addView(body);
+        }
         for (int i = 0; i < labels.size(); i++) {
             final int idx = i;
             final String label = labels.get(i);

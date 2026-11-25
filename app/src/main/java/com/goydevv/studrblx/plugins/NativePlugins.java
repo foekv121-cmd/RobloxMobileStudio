@@ -181,6 +181,9 @@ public final class NativePlugins {
         public String text = "";
         public String icon = "";
         LuaValue callback;
+        /** Set only for menus created with app.ui.addMenu. */
+        List<String> menuLabels;
+        List<LuaValue> menuCallbacks;
     }
 
     // ------------------------------------------------------------------ state
@@ -666,6 +669,22 @@ public final class NativePlugins {
 
     public static void fire(final Button b) {
         if (!masterEnabled()) {
+            return;
+        }
+        if (b.menuLabels != null) {
+            final Plugin mp = get(b.pluginId);
+            if (mp == null) {
+                return;
+            }
+            MAIN.post(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        PluginPanels.show(activity, mp, b.text, "", b.menuLabels, b.menuCallbacks);
+                    } catch (Throwable ignored) {
+                    }
+                }
+            });
             return;
         }
         worker().execute(new Runnable() {
@@ -1197,6 +1216,47 @@ public final class NativePlugins {
                     return LuaValue.NONE;
                 }
             });
+            def(ui, "addMenu", "ui_toolbar", new Impl() {
+                @Override
+                public Varargs run(Varargs a) {
+                    LuaValue o = a.arg1();
+                    if (!o.istable() || !o.get("title").isstring() || !o.get("items").istable()) {
+                        throw new LuaError("expected {title = '...', items = {{text = '...', onClick = function}, ...}}");
+                    }
+                    if (buttonCount >= MAX_BUTTONS) {
+                        throw new LuaError("a plugin can add at most " + MAX_BUTTONS + " buttons / menus");
+                    }
+                    List<String> labels = new ArrayList<>();
+                    List<LuaValue> callbacks = new ArrayList<>();
+                    LuaValue items = o.get("items");
+                    for (int i = 1; i <= 8; i++) {
+                        LuaValue it = items.get(i);
+                        if (it.istable() && it.get("text").isstring() && it.get("onClick").isfunction()) {
+                            labels.add(clip(it.get("text").tojstring(), 30));
+                            callbacks.add(it.get("onClick"));
+                        }
+                    }
+                    if (labels.isEmpty()) {
+                        throw new LuaError("a menu needs at least one item with text and onClick");
+                    }
+                    Button b = new Button();
+                    b.pluginId = plugin.id;
+                    b.text = clip(o.get("title").tojstring(), 24);
+                    b.id = o.get("id").isstring() ? clip(o.get("id").tojstring(), 40) : "menu:" + b.text;
+                    b.icon = o.get("icon").isstring() ? clip(o.get("icon").tojstring(), 4) : "\u2630";
+                    b.menuLabels = labels;
+                    b.menuCallbacks = callbacks;
+                    for (Button existing : BUTTONS) {
+                        if (existing.pluginId.equals(b.pluginId) && existing.id.equals(b.id)) {
+                            BUTTONS.remove(existing);
+                            buttonCount--;
+                        }
+                    }
+                    BUTTONS.add(b);
+                    buttonCount++;
+                    return LuaValue.NONE;
+                }
+            });
             def(ui, "showPanel", "ui_panel", new Impl() {
                 @Override
                 public Varargs run(Varargs a) {
@@ -1323,6 +1383,8 @@ public final class NativePlugins {
             + "UI\n"
             + "app.ui.addToolbarButton{text=, id=, icon=, onClick=function}  [ui_toolbar]\n"
             + "    Buttons appear in File menu > Plugins section. Max 5 per plugin.\n"
+            + "app.ui.addMenu{title=, icon=, items={{text=, onClick=function}}}  [ui_toolbar]\n"
+            + "    One entry in File menu > Plugins that opens a list of up to 8 actions. Counts toward the 5 buttons.\n"
             + "app.ui.showPanel{title=, text=, buttons={{text=, onClick=function}}}  [ui_panel]\n\n"
             + "FILES\n"
             + "app.files.list()  app.files.read(name)  app.files.write(name, text)  [files]\n"

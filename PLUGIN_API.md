@@ -34,6 +34,8 @@ app.objects.setProperty(h, name, v)    [modify_properties]
 UI
 app.ui.addToolbarButton{text=, id=, icon=, onClick=function}  [ui_toolbar]
     Buttons appear in File menu > Plugins section. Max 5 per plugin.
+app.ui.addMenu{title=, icon=, items={{text=, onClick=function}}}  [ui_toolbar]
+    One entry in File menu > Plugins that opens a list of up to 8 actions. Counts toward the 5 buttons.
 app.ui.showPanel{title=, text=, buttons={{text=, onClick=function}}}  [ui_panel]
 
 FILES

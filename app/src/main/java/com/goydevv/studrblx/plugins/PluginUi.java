@@ -39,13 +39,13 @@ import java.util.Set;
 import kotlin.Unit;
 import kotlin.jvm.functions.Function1;
 
-/** Plugin Manager: Installed, Create, My Plugins, Community, Settings. */
+/** Plugin Manager: Installed, Create, My Plugins, Examples, Settings. */
 public final class PluginUi {
     /** Set by MainActivity; opens the system file picker for importing a plugin bundle. */
     public static ActivityResultLauncher<String[]> launcher;
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
-    private static final String[] TABS = {"Installed", "Create", "My Plugins", "Community", "Settings"};
+    private static final String[] TABS = {"Installed", "Create", "My Plugins", "Examples", "Settings"};
     private static Runnable refreshHook;
     private static Activity current;
 
@@ -466,7 +466,7 @@ public final class PluginUi {
                             try {
                                 ClipboardManager cm = (ClipboardManager) act.getSystemService(Context.CLIPBOARD_SERVICE);
                                 cm.setPrimaryClip(ClipData.newPlainText("plugin", p.toJson(false).toString(2)));
-                                toast(act, "Plugin bundle copied. Share it so others can paste or import it.");
+                                toast(act, "Plugin bundle copied to the clipboard (use it as a backup).");
                             } catch (Throwable t) {
                                 toast(act, "Couldn't export: " + t.getMessage());
                             }
@@ -499,7 +499,7 @@ public final class PluginUi {
         if (count == 0) {
             content.addView(note(act, mineOnly
                     ? "You haven't made any plugins yet. Open the Create tab to write one."
-                    : "No plugins installed. Try the starter plugins in Community, or create your own."));
+                    : "No plugins installed. Open Create to write your own, or try the Examples tab."));
         }
         if (mineOnly) {
             content.addView(primary(act, "New plugin", new Runnable() {
@@ -694,7 +694,7 @@ public final class PluginUi {
         Dialogs.INSTANCE.themed(act).setView(sv).setPositiveButton("Close", null).show();
     }
 
-    // ------------------------------------------------------------------ Community (install sources)
+    // ------------------------------------------------------------------ Examples (starter plugins)
 
     private static NativePlugins.Plugin starter(String id, String name, String desc, String icon, String code, String... perms) {
         NativePlugins.Plugin p = new NativePlugins.Plugin();
@@ -712,7 +712,7 @@ public final class PluginUi {
 
     private static void buildCommunity(final Activity act, LinearLayout content, final Runnable[] render) {
         final Ui ui = Ui.INSTANCE;
-        content.addView(note(act, "There is no hosted plugin catalog yet. Install plugins from a starter below, a link (https), a file, or by pasting a bundle someone shared with you."));
+        content.addView(note(act, "Plugins here are made by you, inside this app. These examples are small, readable plugins to learn from: install one, then open it under My Plugins to edit it."));
 
         content.addView(label(act, "STARTER PLUGINS"));
         final NativePlugins.Plugin hello = starter("hello-studio", "Hello Studio", "Counts the objects in your place. A tiny example to learn from.", "\uD83D\uDC4B",
@@ -732,50 +732,6 @@ public final class PluginUi {
             }), gap(act));
             content.addView(card, gap(act));
         }
-
-        content.addView(label(act, "INSTALL FROM LINK"));
-        final EditText etUrl = ui.input(act, "", "https://\u2026/plugin.json", false, false);
-        content.addView(etUrl);
-        content.addView(btn(act, "Download & review", new Runnable() {
-            @Override
-            public void run() {
-                String u = etUrl.getText().toString().trim();
-                if (u.length() == 0) {
-                    toast(act, "Paste a link first.");
-                } else {
-                    installFromUrl(act, u, false);
-                }
-            }
-        }), gap(act));
-
-        content.addView(label(act, "INSTALL FROM FILE"));
-        content.addView(btn(act, "Choose plugin .json\u2026", new Runnable() {
-            @Override
-            public void run() {
-                if (launcher == null) {
-                    toast(act, "File picker isn't ready yet.");
-                } else {
-                    launcher.launch(new String[]{"*/*"});
-                }
-            }
-        }));
-
-        content.addView(label(act, "PASTE A BUNDLE"));
-        final EditText etPaste = ui.input(act, "", "Paste plugin bundle JSON here", false, true);
-        etPaste.setMinHeight(ui.dp(act, 90.0f));
-        etPaste.setGravity(Gravity.TOP | Gravity.START);
-        content.addView(etPaste);
-        content.addView(btn(act, "Review & install", new Runnable() {
-            @Override
-            public void run() {
-                String t = etPaste.getText().toString().trim();
-                if (t.length() == 0) {
-                    toast(act, "Paste a bundle first.");
-                } else {
-                    installFromText(act, t, "");
-                }
-            }
-        }), gap(act));
     }
 
     // ------------------------------------------------------------------ Settings
@@ -795,7 +751,7 @@ public final class PluginUi {
         });
         content.addView(master, gap(act));
         final Switch auto = new Switch(act);
-        auto.setText("Load enabled plugins when Studio first needs them");
+        auto.setText("Load enabled plugins when Studio opens");
         auto.setTextColor(ui.getTEXT());
         auto.setChecked(NativePlugins.autoLoad());
         auto.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
@@ -805,7 +761,7 @@ public final class PluginUi {
             }
         });
         content.addView(auto, gap(act));
-        content.addView(note(act, "Plugins never start with the app. They load in the background the first time you open the File menu or this manager, so nothing runs if you never use them."));
+        content.addView(note(act, "Enabled plugins load in the background shortly after Studio opens, on their own thread, so their buttons are ready in File menu > Plugins. Turn the switch above off to stop that; nothing runs for disabled plugins."));
 
         content.addView(label(act, "TIME LIMIT PER RUN"));
         final int[] limits = {1000, 2000, 5000, 10000};

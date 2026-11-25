@@ -396,6 +396,11 @@ public final class MainActivity extends AppCompatActivity implements MainActions
             studio = new Studio(applicationContext);
         }
         this.studio = studio;
+        try {
+            // start enabled plugins in the background now, so their buttons already exist the first time the File menu opens
+            com.goydevv.studrblx.plugins.NativePlugins.init(this, studio);
+        } catch (Throwable ignoredPlugins) {
+        }
         Studio studio2 = this.studio;
         if (studio2 == null) {
             Intrinsics.throwUninitializedPropertyAccessException("studio");
