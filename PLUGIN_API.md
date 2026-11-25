@@ -45,3 +45,9 @@ app.files.list()  app.files.read(name)  app.files.write(name, text)  [files]
 NOT AVAILABLE
 Roblox web APIs, API keys, cookies, tokens, other plugins' data, the rest of the phone's storage.
 ```
+
+PLUGIN FILES (.rmsp)
+A plugin is saved as a .rmsp file (Roblox Mobile Studio Plugin): a JSON text file with the
+plugin's name, description, author, version, icon, requested permissions and Lua code.
+Export: Plugins > My Plugins > Export .rmsp.   Import: Plugins > Import > Choose .rmsp file.
+Imported plugins are validated and you review the permissions before they install.

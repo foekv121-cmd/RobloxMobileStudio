@@ -249,8 +249,15 @@ public final class MainActivity extends AppCompatActivity implements MainActions
             com.goydevv.studrblx.plugins.PluginUi.onFilePicked(MainActivity.this, (Uri) obj);
         }
     });
+    private final ActivityResultLauncher<String> pluginSaveLauncher = registerForActivityResult(new ActivityResultContracts.CreateDocument("application/octet-stream"), new ActivityResultCallback() {
+        @Override
+        public final void onActivityResult(Object obj) {
+            com.goydevv.studrblx.plugins.PluginUi.onSavePicked(MainActivity.this, (Uri) obj);
+        }
+    });
     {
         com.goydevv.studrblx.plugins.PluginUi.launcher = pluginPickLauncher;
+        com.goydevv.studrblx.plugins.PluginUi.saveLauncher = pluginSaveLauncher;
     }
     private final ActivityResultLauncher<String> createLauncher = registerForActivityResult(new ActivityResultContracts.CreateDocument("application/octet-stream"), new ActivityResultCallback() { // from class: com.goydevv.studrblx.MainActivity$$ExternalSyntheticLambda152
         @Override // androidx.activity.result.ActivityResultCallback

@@ -37,15 +37,18 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import kotlin.Unit;
+import org.json.JSONObject;
 import kotlin.jvm.functions.Function1;
 
-/** Plugin Manager: Installed, Create, My Plugins, Examples, Settings. */
+/** Plugin Manager: Installed, Create, My Plugins, Import, Settings. */
 public final class PluginUi {
     /** Set by MainActivity; opens the system file picker for importing a plugin bundle. */
     public static ActivityResultLauncher<String[]> launcher;
+    public static ActivityResultLauncher<String> saveLauncher;
+    private static String pendingExport;
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
-    private static final String[] TABS = {"Installed", "Create", "My Plugins", "Examples", "Settings"};
+    private static final String[] TABS = {"Installed", "Create", "My Plugins", "Import", "Settings"};
     private static Runnable refreshHook;
     private static Activity current;
 
@@ -148,6 +151,11 @@ public final class PluginUi {
         if (uri == null) {
             return;
         }
+        String fileName = displayName(act, uri);
+        if (!fileName.toLowerCase(java.util.Locale.ROOT).endsWith(".rmsp")) {
+            toast(act, "Choose a .rmsp plugin file (Roblox Mobile Studio Plugin).");
+            return;
+        }
         try (InputStream in = act.getContentResolver().openInputStream(uri)) {
             if (in == null) {
                 throw new IOException("couldn't open the file");
@@ -164,6 +172,40 @@ public final class PluginUi {
             installFromText(act, new String(out.toByteArray(), StandardCharsets.UTF_8), "");
         } catch (Throwable t) {
             toast(act, "Couldn't import: " + t.getMessage());
+        }
+    }
+
+    private static String displayName(Activity act, Uri uri) {
+        String name = "";
+        try (android.database.Cursor c = act.getContentResolver().query(uri, new String[]{android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                name = c.getString(0);
+            }
+        } catch (Throwable ignored) {
+        }
+        if (name == null || name.length() == 0) {
+            String seg = uri.getLastPathSegment();
+            name = seg == null ? "" : seg;
+        }
+        return name;
+    }
+
+    /** Called by MainActivity after the user picked where to save an exported .rmsp file. */
+    public static void onSavePicked(Activity act, Uri uri) {
+        String text = pendingExport;
+        pendingExport = null;
+        if (uri == null || text == null) {
+            return;
+        }
+        try (java.io.OutputStream out = act.getContentResolver().openOutputStream(uri)) {
+            if (out == null) {
+                throw new IOException("couldn't open the file");
+            }
+            out.write(text.getBytes(StandardCharsets.UTF_8));
+            out.flush();
+            toast(act, "Plugin saved as a .rmsp file.");
+        } catch (Throwable t) {
+            toast(act, "Couldn't save the plugin file: " + t.getMessage());
         }
     }
 
@@ -460,13 +502,18 @@ public final class PluginUi {
                         }
                     })), gap(act));
             card.addView(btnRow(act,
-                    btn(act, "Export", new Runnable() {
+                    btn(act, "Export .rmsp", new Runnable() {
                         @Override
                         public void run() {
                             try {
-                                ClipboardManager cm = (ClipboardManager) act.getSystemService(Context.CLIPBOARD_SERVICE);
-                                cm.setPrimaryClip(ClipData.newPlainText("plugin", p.toJson(false).toString(2)));
-                                toast(act, "Plugin bundle copied to the clipboard (use it as a backup).");
+                                if (saveLauncher == null) {
+                                    throw new IllegalStateException("file saving isn't ready yet");
+                                }
+                                JSONObject bundle = p.toJson(false);
+                                bundle.put("format", "rmsp");
+                                bundle.put("formatVersion", 1);
+                                pendingExport = bundle.toString(2);
+                                saveLauncher.launch(p.id + ".rmsp");
                             } catch (Throwable t) {
                                 toast(act, "Couldn't export: " + t.getMessage());
                             }
@@ -499,7 +546,7 @@ public final class PluginUi {
         if (count == 0) {
             content.addView(note(act, mineOnly
                     ? "You haven't made any plugins yet. Open the Create tab to write one."
-                    : "No plugins installed. Open Create to write your own, or try the Examples tab."));
+                    : "No plugins installed. Open Create to write your own, or import a .rmsp file from the Import tab."));
         }
         if (mineOnly) {
             content.addView(primary(act, "New plugin", new Runnable() {
@@ -712,9 +759,21 @@ public final class PluginUi {
 
     private static void buildCommunity(final Activity act, LinearLayout content, final Runnable[] render) {
         final Ui ui = Ui.INSTANCE;
-        content.addView(note(act, "Plugins here are made by you, inside this app. These examples are small, readable plugins to learn from: install one, then open it under My Plugins to edit it."));
+        content.addView(note(act, "Plugins are made inside this app and saved as .rmsp files (Roblox Mobile Studio Plugin). Export one from My Plugins, then import it here on any device. You always review the permissions before it installs."));
 
-        content.addView(label(act, "STARTER PLUGINS"));
+        content.addView(label(act, "IMPORT A .RMSP FILE"));
+        content.addView(btn(act, "Choose .rmsp file\u2026", new Runnable() {
+            @Override
+            public void run() {
+                if (launcher == null) {
+                    toast(act, "File picker isn't ready yet.");
+                } else {
+                    launcher.launch(new String[]{"*/*"});
+                }
+            }
+        }), gap(act));
+
+        content.addView(label(act, "EXAMPLE PLUGINS"));
         final NativePlugins.Plugin hello = starter("hello-studio", "Hello Studio", "Counts the objects in your place. A tiny example to learn from.", "\uD83D\uDC4B",
                 NativePlugins.SAMPLE_HELLO, "ui_toolbar", "read_project", "notify");
         final NativePlugins.Plugin rename = starter("quick-rename", "Quick Rename", "Adds a prefix to selected objects and can add a folder.", "\u270F\uFE0F",
