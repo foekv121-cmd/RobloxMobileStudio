@@ -8,6 +8,9 @@
             domain="sharedpref"
             path="start_cache.xml"/>
         <exclude
+            domain="sharedpref"
+            path="gemini_ai.xml"/>
+        <exclude
             domain="root"
             path="app_webview/"/>
         <exclude
@@ -21,6 +24,9 @@
         <exclude
             domain="sharedpref"
             path="start_cache.xml"/>
+        <exclude
+            domain="sharedpref"
+            path="gemini_ai.xml"/>
         <exclude
             domain="root"
             path="app_webview/"/>
