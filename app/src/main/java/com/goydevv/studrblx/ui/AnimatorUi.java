@@ -12,67 +12,69 @@ import android.view.WindowManager;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.PopupMenu;
 import android.widget.ScrollView;
-import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 import com.goydevv.studrblx.core.Studio;
+import com.goydevv.studrblx.engine.SunAnim;
+import com.goydevv.studrblx.engine.SunEase;
+import com.goydevv.studrblx.engine.SunRig;
 import com.goydevv.studrblx.model.CFrame;
 import com.goydevv.studrblx.model.Instance;
 import com.goydevv.studrblx.model.InstanceFactory;
+import com.goydevv.studrblx.model.Vector3;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
-import java.util.TreeMap;
 import kotlin.Unit;
-import kotlin.jvm.functions.Function1;
-import org.json.JSONArray;
-import org.json.JSONObject;
 
 /**
- * Keyframe animator for models and parts (not the player character).
+ * Keyframe animator for rigs and models, rebuilt on the feature set of the Sun Animator plugin.
  *
- * How it works: the user selects a Model (or a Part) in the Explorer and opens File > Animator.
- * They pose the parts with the normal Move / Rotate tools, tap "Set key here" at a time on the
- * timeline, and repeat. Scrubbing or Play previews the animation by moving the real parts.
- * "Save to model" writes a Script named Anim_<name> into the model. That script holds the
- * keyframe data and plays it with TweenService when the game runs. Saved animations are loaded
- * back from that script, so nothing else is stored anywhere.
+ * Select a Model in the Explorer and open File > Animator. Motor6D joints get a track each (their
+ * Transform is animated, so a rig keeps working in real Roblox); parts that no joint moves get an
+ * absolute CFrame track. Pose with the normal Move / Rotate tools, tap Key to record the pose at the
+ * playhead, and drag the diamonds to retime. Every key has its own easing (13 families, 4 directions).
+ * Save writes a Script named Anim_<name> into the model (data + player), Export writes a Roblox
+ * KeyframeSequence, and Import reads one back.
  */
-public final class AnimatorUi {
-    private static final int MAX_PARTS = 40;
-    private static final int MAX_KEYS = 30;
-    private static final int MAX_ENTRIES = 600;
-    private static final String HEADER = "--[=[ANIMATOR_DATA";
+public final class AnimatorUi implements TimelineView.Host {
+    private static final int MAX_KEYS = 3000;
     private static AnimatorUi current;
+
+    private interface FieldsCb {
+        void ok(String[] values);
+    }
+
+    private static final class ClipKey {
+        String path;
+        int offset;
+        SunAnim.Key key;
+    }
 
     private final Activity act;
     private final Studio studio;
     private final Instance root;
-    private final List<Instance> parts = new ArrayList<>();
-    private final List<String> paths = new ArrayList<>();
-    private final List<CFrame> base = new ArrayList<>();
-    private final TreeMap<Float, CFrame[]> keys = new TreeMap<>();
-    private int skipped;
-    private float length = 2.0f;
-    private boolean loop = true;
-    private String animName = "Anim1";
-    private float time;
+    private final SunRig rig;
+    private SunAnim anim;
+    private final ArrayDeque<SunAnim> undo = new ArrayDeque<>();
+    private final ArrayDeque<SunAnim> redo = new ArrayDeque<>();
+    private final List<ClipKey> clip = new ArrayList<>();
+    private int cur;
+    private float playPos;
     private boolean playing;
     private long lastTick;
+    private boolean dirty;
+    private boolean useLastEase = true;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private AlertDialog dialog;
-    private TextView info;
-    private TextView timeLabel;
-    private TextView status;
+    private TimelineView tl;
+    private TextView frameLabel;
     private TextView playBtn;
-    private SeekBar bar;
-    private EditText etName;
-    private EditText etLength;
-    private CheckBox cbLoop;
+    private TextView multiBtn;
+    private TextView status;
 
     private final Runnable tick = new Runnable() {
         @Override
@@ -83,29 +85,36 @@ public final class AnimatorUi {
             long now = System.nanoTime();
             float dt = (now - lastTick) / 1.0e9f;
             lastTick = now;
-            time += dt;
-            if (time >= length) {
-                if (loop) {
-                    time = time % Math.max(0.05f, length);
+            playPos += dt * anim.fps;
+            if (playPos >= anim.length) {
+                if (anim.loop) {
+                    playPos = playPos % Math.max(1, anim.length);
                 } else {
-                    time = length;
+                    playPos = anim.length;
                     playing = false;
-                    playBtn.setText("\u25B6 Play");
+                    playBtn.setText("\u25B6");
                 }
             }
-            showTime();
-            applyPose(time);
+            cur = (int) playPos;
+            rig.apply(anim, playPos);
+            studio.markDirty();
+            tl.setPlayFrame(cur);
+            tl.keepPlayheadVisible();
+            updateLabel();
             if (playing) {
                 handler.postDelayed(this, 33L);
             }
         }
     };
 
-    private AnimatorUi(Activity act, Studio studio, Instance root) {
+    private AnimatorUi(Activity act, Studio studio, Instance root, SunRig rig) {
         this.act = act;
         this.studio = studio;
         this.root = root;
+        this.rig = rig;
     }
+
+    // ------------------------------------------------------------------ opening
 
     /** Opens the animator for the current Explorer selection. */
     public static void show(Activity act, Studio studio) {
@@ -126,18 +135,17 @@ public final class AnimatorUi {
                 return;
             }
             if (current != null) {
-                current.close(true);
+                current.close();
             }
-            AnimatorUi a = new AnimatorUi(act, studio, target);
-            if (!a.collectParts()) {
+            SunRig rig = new SunRig(target);
+            if (rig.isEmpty()) {
                 toast(act, "That selection has no parts to animate.");
                 return;
             }
+            AnimatorUi a = new AnimatorUi(act, studio, target, rig);
             current = a;
-            a.loadSaved(null);
-            if (a.keys.isEmpty()) {
-                a.keys.put(0.0f, a.currentPose());
-            }
+            a.anim = rig.newAnim();
+            a.loadFromModel(null);
             a.build();
         } catch (Throwable t) {
             toast(act, "Couldn't open the Animator: " + t);
@@ -148,125 +156,103 @@ public final class AnimatorUi {
         Toast.makeText(a, s, Toast.LENGTH_LONG).show();
     }
 
-    // ------------------------------------------------------------------ data
+    // ------------------------------------------------------------------ small UI helpers
 
-    private boolean collectParts() {
-        List<Instance> all = new ArrayList<>();
-        if (root.isA("BasePart")) {
-            all.add(root);
+    private void say(String s) {
+        if (status != null) {
+            status.setText(s);
         }
-        root.descendants(all);
-        Set<String> seen = new HashSet<>();
-        for (Instance i : all) {
-            if (!i.isA("BasePart") || !(i.get("CFrame") instanceof CFrame)) {
-                continue;
+    }
+
+    private TextView btn(String label, final Runnable r) {
+        final Ui ui = Ui.INSTANCE;
+        return ui.button(act, label, ui.getHOVER(), v -> {
+            try {
+                r.run();
+            } catch (Throwable t) {
+                say("Error: " + t);
             }
-            String p = pathOf(i);
-            if (!seen.add(p) || parts.size() >= MAX_PARTS) {
-                skipped++;
-                continue;
+            return Unit.INSTANCE;
+        });
+    }
+
+    private LinearLayout hrow(View... views) {
+        LinearLayout l = new LinearLayout(act);
+        l.setOrientation(LinearLayout.HORIZONTAL);
+        int m = Ui.INSTANCE.dp(act, 2.0f);
+        for (View v : views) {
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1.0f);
+            lp.setMargins(m, m, m, m);
+            l.addView(v, lp);
+        }
+        return l;
+    }
+
+    private void menu(View anchor, Object... pairs) {
+        PopupMenu pm = new PopupMenu(Ui.INSTANCE.popupContext(act), anchor);
+        for (int i = 0; i + 1 < pairs.length; i += 2) {
+            pm.getMenu().add(0, (Integer) pairs[i], 0, (String) pairs[i + 1]);
+        }
+        pm.setOnMenuItemClickListener(item -> {
+            try {
+                onMenu(item.getItemId());
+            } catch (Throwable t) {
+                say("Error: " + t);
             }
-            parts.add(i);
-            paths.add(p);
-            base.add((CFrame) i.get("CFrame"));
-        }
-        return !parts.isEmpty();
+            return true;
+        });
+        pm.show();
     }
 
-    private String pathOf(Instance i) {
-        StringBuilder sb = new StringBuilder();
-        Instance cur = i;
-        while (cur != null && cur != root) {
-            if (sb.length() > 0) {
-                sb.insert(0, "/");
-            }
-            sb.insert(0, cur.getName().replace("/", "_"));
-            cur = cur.getParent();
-        }
-        return sb.toString();
+    private static String chk(boolean on, String label) {
+        return (on ? "\u2713 " : "    ") + label;
     }
 
-    private CFrame[] currentPose() {
-        CFrame[] out = new CFrame[parts.size()];
-        for (int i = 0; i < out.length; i++) {
-            Object v = parts.get(i).get("CFrame");
-            out[i] = v instanceof CFrame ? (CFrame) v : base.get(i);
+    private void fieldsDialog(String title, String[] labels, String[] defs, boolean[] numeric, final FieldsCb cb) {
+        final Ui ui = Ui.INSTANCE;
+        LinearLayout box = new LinearLayout(act);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = ui.dp(act, 14.0f);
+        box.setPadding(pad, pad, pad, pad);
+        final EditText[] ets = new EditText[labels.length];
+        for (int i = 0; i < labels.length; i++) {
+            box.addView(ui.text(act, labels[i], 11.0f, ui.getDIM(), false));
+            ets[i] = ui.input(act, defs[i], labels[i], numeric[i], false);
+            box.addView(ets[i]);
         }
-        return out;
+        ScrollView sv = new ScrollView(act);
+        sv.addView(box);
+        Dialogs.INSTANCE.themed(act).setTitle(title).setView(sv)
+                .setPositiveButton("OK", (d, w) -> {
+                    String[] out = new String[ets.length];
+                    for (int i = 0; i < out.length; i++) {
+                        out[i] = ets[i].getText().toString().trim();
+                    }
+                    try {
+                        cb.ok(out);
+                    } catch (Throwable t) {
+                        say("Error: " + t);
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
-    private void applyPose(float t) {
-        if (keys.isEmpty()) {
-            return;
-        }
-        Map.Entry<Float, CFrame[]> lo = keys.floorEntry(t);
-        Map.Entry<Float, CFrame[]> hi = keys.ceilingEntry(t);
-        if (lo == null) {
-            lo = hi;
-        }
-        if (hi == null) {
-            hi = lo;
-        }
-        float span = hi.getKey() - lo.getKey();
-        float a = span > 1.0e-4f ? (t - lo.getKey()) / span : 0.0f;
-        for (int i = 0; i < parts.size(); i++) {
-            CFrame c = a <= 0.0f ? lo.getValue()[i] : lo.getValue()[i].lerp(hi.getValue()[i], a);
-            parts.get(i).set("CFrame", c, true);
-        }
-        studio.markDirty();
-    }
-
-    private void resetPose() {
-        for (int i = 0; i < parts.size(); i++) {
-            parts.get(i).set("CFrame", base.get(i), true);
-        }
-    }
-
-    private static float snap(float t) {
-        return Math.round(t * 20.0f) / 20.0f;
-    }
-
-    private float readLength() {
-        float v = length;
+    private static float num(String s, float fallback) {
         try {
-            v = Float.parseFloat(etLength.getText().toString().trim());
-        } catch (Throwable ignored) {
+            return Float.parseFloat(s);
+        } catch (Throwable t) {
+            return fallback;
         }
-        float last = keys.isEmpty() ? 0.0f : keys.lastKey();
-        v = Math.max(Math.max(0.2f, last), Math.min(60.0f, v));
-        length = v;
-        etLength.setText(fmt(v));
-        return v;
     }
 
-    private static String fmt(float v) {
-        return String.format(Locale.US, "%.2f", v);
+    private static int inum(String s, int fallback) {
+        return Math.round(num(s, fallback));
     }
 
-    private static double r4(float v) {
-        if (Float.isNaN(v) || Float.isInfinite(v)) {
-            return 0.0d;
-        }
-        return Math.round(v * 10000.0f) / 10000.0d;
+    private static String f2(float v) {
+        return String.format(Locale.US, "%.3f", v);
     }
-
-    private static JSONArray cfJson(CFrame c) throws Exception {
-        float[] m = {c.getX(), c.getY(), c.getZ(), c.getR00(), c.getR01(), c.getR02(), c.getR10(), c.getR11(), c.getR12(), c.getR20(), c.getR21(), c.getR22()};
-        JSONArray a = new JSONArray();
-        for (float f : m) {
-            a.put(r4(f));
-        }
-        return a;
-    }
-
-    private static CFrame cfFrom(JSONArray a) {
-        return new CFrame((float) a.optDouble(0), (float) a.optDouble(1), (float) a.optDouble(2),
-                (float) a.optDouble(3), (float) a.optDouble(4), (float) a.optDouble(5),
-                (float) a.optDouble(6), (float) a.optDouble(7), (float) a.optDouble(8),
-                (float) a.optDouble(9), (float) a.optDouble(10), (float) a.optDouble(11));
-    }
-
-    // ------------------------------------------------------------------ save / load
 
     private static String safeName(String s) {
         String n = s == null ? "" : s.trim().replaceAll("[^A-Za-z0-9_ -]", "");
@@ -276,92 +262,900 @@ public final class AnimatorUi {
         return n.length() == 0 ? "Anim1" : n;
     }
 
-    private String buildSource() throws Exception {
-        JSONObject o = new JSONObject();
-        o.put("v", 1);
-        o.put("name", animName);
-        o.put("length", r4(length));
-        o.put("loop", loop);
-        JSONArray pj = new JSONArray();
-        for (String p : paths) {
-            pj.put(p);
-        }
-        o.put("parts", pj);
-        JSONArray kj = new JSONArray();
-        for (Map.Entry<Float, CFrame[]> e : keys.entrySet()) {
-            JSONObject k = new JSONObject();
-            k.put("t", r4(e.getKey()));
-            JSONArray cfs = new JSONArray();
-            for (CFrame c : e.getValue()) {
-                cfs.put(cfJson(c));
-            }
-            k.put("cf", cfs);
-            kj.put(k);
-        }
-        o.put("keys", kj);
+    // ------------------------------------------------------------------ building the screen
 
-        StringBuilder sb = new StringBuilder();
-        sb.append(HEADER).append('\n').append(o.toString()).append("\n]=]\n");
-        sb.append("-- Generated by the Mobile Studio Animator. Edit the animation there; changes made here are overwritten on save.\n");
-        sb.append("local TweenService = game:GetService(\"TweenService\")\n");
-        sb.append("local root = script.Parent\n");
-        sb.append("local LOOP = ").append(loop ? "true" : "false").append('\n');
-        sb.append("local LENGTH = ").append(r4(length)).append('\n');
-        sb.append("local PARTS = {");
-        for (int i = 0; i < paths.size(); i++) {
-            sb.append(i == 0 ? "" : ", ").append(JSONObject.quote(paths.get(i)));
+    private void build() {
+        final Ui ui = Ui.INSTANCE;
+        LinearLayout content = new LinearLayout(act);
+        content.setOrientation(LinearLayout.VERTICAL);
+        int pad = ui.dp(act, 8.0f);
+        content.setPadding(pad, pad, pad, pad);
+
+        // menu bar
+        final TextView title = ui.text(act, "Animator \u2014 " + root.getName(), 13.0f, ui.getTEXT(), true);
+        LinearLayout bar = new LinearLayout(act);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.addView(title, new LinearLayout.LayoutParams(0, -2, 1.0f));
+        String[] names = {"File", "Edit", "Key", "Frame", "Options"};
+        for (final String n : names) {
+            TextView b = btn(n, null);
+            final TextView bb = b;
+            b.setOnClickListener(v -> openMenu(n, bb));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+            lp.setMargins(ui.dp(act, 2.0f), 0, ui.dp(act, 2.0f), 0);
+            bar.addView(b, lp);
         }
-        sb.append("}\nlocal KEYS = {\n");
-        for (Map.Entry<Float, CFrame[]> e : keys.entrySet()) {
-            sb.append("\t{t = ").append(r4(e.getKey())).append(", cf = {");
-            CFrame[] arr = e.getValue();
-            for (int i = 0; i < arr.length; i++) {
-                JSONArray c = cfJson(arr[i]);
-                sb.append(i == 0 ? "" : ", ").append('{');
-                for (int j = 0; j < c.length(); j++) {
-                    sb.append(j == 0 ? "" : ", ").append(c.get(j));
-                }
-                sb.append('}');
-            }
-            sb.append("}},\n");
+        TextView close = btn("\u2715", this::requestClose);
+        bar.addView(close, new LinearLayout.LayoutParams(-2, -2));
+        content.addView(bar);
+
+        // transport
+        playBtn = btn("\u25B6", this::togglePlay);
+        content.addView(hrow(
+                btn("\u23EE", () -> goTo(0)),
+                btn("\u25C0\u25C6", () -> jumpKey(-1)),
+                playBtn,
+                btn("\u25C6\u25B6", () -> jumpKey(1)),
+                btn("\u23ED", () -> goTo(anim.length))));
+        frameLabel = ui.text(act, "", 12.0f, ui.getTEXT(), true);
+        frameLabel.setOnClickListener(v -> jumpDialog());
+        frameLabel.setPadding(ui.dp(act, 6.0f), ui.dp(act, 4.0f), 0, ui.dp(act, 4.0f));
+        content.addView(frameLabel);
+
+        // timeline
+        tl = new TimelineView(act);
+        tl.anim = anim;
+        tl.host = this;
+        content.addView(tl, new LinearLayout.LayoutParams(-1, 0, 1.0f));
+
+        // actions
+        multiBtn = btn("Multi: off", this::toggleMulti);
+        content.addView(hrow(
+                btn("\u25C6 Key", () -> setKeys(false)),
+                btn("Ease", this::easeDialog),
+                btn("Value", this::valueDialog),
+                btn("Delete", this::deleteKeys),
+                multiBtn));
+        status = ui.text(act, "Pose the parts with the normal tools, then tap Key. Long press a row to add a key there.", 11.0f, ui.getDIM(), false);
+        status.setSingleLine(false);
+        status.setPadding(ui.dp(act, 6.0f), ui.dp(act, 4.0f), 0, 0);
+        content.addView(status);
+
+        dialog = Dialogs.INSTANCE.themed(act).setView(content).setCancelable(false).create();
+        Window w = dialog.getWindow();
+        if (w != null) {
+            // not modal: touches outside the panel still reach the viewport, so parts can be posed while it is open
+            w.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL);
+            w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            w.setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+            DisplayMetrics dm = act.getResources().getDisplayMetrics();
+            w.setLayout(dm.widthPixels, Math.max(ui.dp(act, 300.0f), dm.heightPixels * 62 / 100));
         }
-        sb.append("}\n\n");
-        sb.append("local function find(path)\n"
-                + "\tlocal o = root\n"
-                + "\tfor name in string.gmatch(path, \"[^/]+\") do\n"
-                + "\t\to = o and o:FindFirstChild(name)\n"
-                + "\tend\n"
-                + "\treturn o\n"
-                + "end\n\n"
-                + "local targets = {}\n"
-                + "for i, p in ipairs(PARTS) do\n"
-                + "\ttargets[i] = find(p)\n"
-                + "end\n\n"
-                + "local function cf(t)\n"
-                + "\treturn CFrame.new(t[1], t[2], t[3], t[4], t[5], t[6], t[7], t[8], t[9], t[10], t[11], t[12])\n"
-                + "end\n\n"
-                + "local function run()\n"
-                + "\tfor i, part in ipairs(targets) do\n"
-                + "\t\tif part then part.CFrame = cf(KEYS[1].cf[i]) end\n"
-                + "\tend\n"
-                + "\tfor k = 1, #KEYS - 1 do\n"
-                + "\t\tlocal a, b = KEYS[k], KEYS[k + 1]\n"
-                + "\t\tlocal d = b.t - a.t\n"
-                + "\t\tif d > 0 then\n"
-                + "\t\t\tfor i, part in ipairs(targets) do\n"
-                + "\t\t\t\tif part then\n"
-                + "\t\t\t\t\tTweenService:Create(part, TweenInfo.new(d, Enum.EasingStyle.Linear), {CFrame = cf(b.cf[i])}):Play()\n"
-                + "\t\t\t\tend\n"
-                + "\t\t\tend\n"
-                + "\t\t\ttask.wait(d)\n"
-                + "\t\tend\n"
-                + "\tend\n"
-                + "\tlocal rest = LENGTH - KEYS[#KEYS].t\n"
-                + "\tif rest > 0 then task.wait(rest) end\n"
-                + "end\n\n"
-                + "repeat run() until not LOOP\n");
-        return sb.toString();
+        dialog.show();
+        tl.post(() -> tl.fit());
+        updateLabel();
+        say(rig.hasJoints()
+                ? "Rig found: each Motor6D has a track. Pose a limb, then tap Key."
+                : "No Motor6D joints found: each free part gets a track.");
     }
+
+    private void openMenu(String which, View anchor) {
+        switch (which) {
+            case "File":
+                menu(anchor, 1, "Save to model", 2, "Load from model\u2026", 3, "Export KeyframeSequence",
+                        4, "Import KeyframeSequence", 5, "Animation settings\u2026", 6, "Close");
+                break;
+            case "Edit":
+                menu(anchor, 10, "Undo", 11, "Redo", 12, "Copy", 13, "Paste at playhead", 14, "Delete",
+                        15, "Select all", 16, "Select track keys", 17, "Clear selection");
+                break;
+            case "Key":
+                menu(anchor, 20, "Ease\u2026", 21, "Value\u2026", 22, "Key selected track", 23, "Key all tracks",
+                        24, "Key rest pose", 25, "Previous key", 26, "Next key");
+                break;
+            case "Frame":
+                menu(anchor, 30, "Stretch\u2026", 31, "Offset\u2026", 32, "Repeat\u2026", 33, "Fit timeline",
+                        34, "Jump to frame\u2026", 35, "Markers\u2026", 36, "Reverse selection");
+                break;
+            default:
+                menu(anchor, 40, chk(tl.easeColors, "Easing colors"), 41, chk(tl.showSeconds, "Show seconds"),
+                        42, chk(useLastEase, "Use last ease"));
+                break;
+        }
+    }
+
+    private void onMenu(int id) {
+        switch (id) {
+            case 1: save(); break;
+            case 2: loadDialog(); break;
+            case 3: exportSequence(); break;
+            case 4: importSequence(); break;
+            case 5: settingsDialog(); break;
+            case 6: requestClose(); break;
+            case 10: doUndo(); break;
+            case 11: doRedo(); break;
+            case 12: copyKeys(); break;
+            case 13: pasteKeys(); break;
+            case 14: deleteKeys(); break;
+            case 15: selectAll(); break;
+            case 16: selectTrackKeys(); break;
+            case 17: tl.selected.clear(); tl.invalidate(); say("Selection cleared."); break;
+            case 20: easeDialog(); break;
+            case 21: valueDialog(); break;
+            case 22: setKeys(false); break;
+            case 23: setKeys(true); break;
+            case 24: keyRest(); break;
+            case 25: jumpKey(-1); break;
+            case 26: jumpKey(1); break;
+            case 30: stretchDialog(); break;
+            case 31: offsetDialog(); break;
+            case 32: repeatDialog(); break;
+            case 33: fitTimeline(); break;
+            case 34: jumpDialog(); break;
+            case 35: markersDialog(); break;
+            case 36: reverseKeys(); break;
+            case 40: tl.easeColors = !tl.easeColors; tl.invalidate(); break;
+            case 41: tl.showSeconds = !tl.showSeconds; tl.invalidate(); updateLabel(); break;
+            case 42: useLastEase = !useLastEase; break;
+            default: break;
+        }
+    }
+
+    // ------------------------------------------------------------------ TimelineView.Host
+
+    @Override
+    public void onScrub(int frame) {
+        stopPlay();
+        cur = Math.max(0, frame);
+        rig.apply(anim, cur);
+        studio.markDirty();
+        updateLabel();
+    }
+
+    @Override
+    public void onSelectTrack(int index) {
+        updateLabel();
+    }
+
+    @Override
+    public void onSelectionChanged() {
+        updateLabel();
+    }
+
+    @Override
+    public void onBeginEdit() {
+        pushUndo();
+    }
+
+    @Override
+    public void onKeysMoved() {
+        for (SunAnim.Track t : anim.tracks) {
+            for (int i = t.keys.size() - 1; i >= 0; i--) {
+                SunAnim.Key k = t.keys.get(i);
+                if (tl.selected.contains(k)) {
+                    continue;
+                }
+                for (SunAnim.Key s : t.keys) {
+                    if (s != k && tl.selected.contains(s) && s.frame == k.frame) {
+                        t.keys.remove(i);
+                        break;
+                    }
+                }
+            }
+        }
+        anim.normalize();
+        rig.apply(anim, cur);
+        tl.invalidate();
+        updateLabel();
+        say("Moved " + tl.selected.size() + " key(s).");
+    }
+
+    @Override
+    public void onAddKeyAt(int trackIndex, int frame) {
+        if (trackIndex < 0 || trackIndex >= anim.tracks.size()) {
+            return;
+        }
+        stopPlay();
+        pushUndo();
+        SunAnim.Track t = anim.tracks.get(trackIndex);
+        CFrame v = frame == cur ? rig.capture(t) : SunAnim.sample(t, frame);
+        if (v == null) {
+            v = rig.rest(t);
+        }
+        if (v == null) {
+            say("Nothing to key on " + t.label + ".");
+            return;
+        }
+        putKey(t, frame, v);
+        anim.normalize();
+        tl.selTrack = trackIndex;
+        cur = frame;
+        tl.setPlayFrame(frame);
+        rig.apply(anim, cur);
+        updateLabel();
+        say("Key added on " + t.label + " at frame " + frame + ".");
+    }
+
+    // ------------------------------------------------------------------ state helpers
+
+    private void pushUndo() {
+        undo.push(anim.copy());
+        while (undo.size() > 60) {
+            undo.removeLast();
+        }
+        redo.clear();
+        dirty = true;
+    }
+
+    private void rebind() {
+        tl.anim = anim;
+        tl.selected.clear();
+        if (tl.selTrack >= anim.tracks.size()) {
+            tl.selTrack = -1;
+        }
+        cur = Math.min(cur, Math.max(0, anim.length));
+        tl.setPlayFrame(cur);
+        rig.apply(anim, cur);
+        studio.markDirty();
+        updateLabel();
+    }
+
+    private void doUndo() {
+        stopPlay();
+        if (undo.isEmpty()) {
+            say("Nothing to undo.");
+            return;
+        }
+        redo.push(anim.copy());
+        anim = undo.pop();
+        dirty = true;
+        rebind();
+        say("Undone.");
+    }
+
+    private void doRedo() {
+        stopPlay();
+        if (redo.isEmpty()) {
+            say("Nothing to redo.");
+            return;
+        }
+        undo.push(anim.copy());
+        anim = redo.pop();
+        dirty = true;
+        rebind();
+        say("Redone.");
+    }
+
+    private void updateLabel() {
+        if (frameLabel == null) {
+            return;
+        }
+        String time = tl != null && tl.showSeconds
+                ? f2(cur / (float) anim.fps) + " s"
+                : "frame " + cur + " / " + anim.length;
+        String sel = tl != null && !tl.selected.isEmpty() ? "   \u2022   " + tl.selected.size() + " key(s) selected" : "";
+        String trk = tl != null && tl.selTrack >= 0 && tl.selTrack < anim.tracks.size()
+                ? "   \u2022   " + anim.tracks.get(tl.selTrack).label : "";
+        frameLabel.setText(time + "  (" + anim.fps + " fps)" + trk + sel);
+    }
+
+    private void toggleMulti() {
+        tl.multi = !tl.multi;
+        multiBtn.setText(tl.multi ? "Multi: on" : "Multi: off");
+        say(tl.multi ? "Multi-select on: tap diamonds to add or remove them from the selection." : "Multi-select off.");
+    }
+
+    private List<SunAnim.Key> targetKeys() {
+        List<SunAnim.Key> out = new ArrayList<>();
+        for (SunAnim.Track t : anim.tracks) {
+            for (SunAnim.Key k : t.keys) {
+                if (tl.selected.contains(k)) {
+                    out.add(k);
+                }
+            }
+        }
+        if (out.isEmpty() && tl.selTrack >= 0 && tl.selTrack < anim.tracks.size()) {
+            SunAnim.Key k = anim.tracks.get(tl.selTrack).at(cur);
+            if (k != null) {
+                out.add(k);
+            }
+        }
+        return out;
+    }
+
+    private List<SunAnim.Key> keysOrAll() {
+        List<SunAnim.Key> keys = targetKeys();
+        if (keys.isEmpty()) {
+            for (SunAnim.Track t : anim.tracks) {
+                keys.addAll(t.keys);
+            }
+        }
+        return keys;
+    }
+
+    private void putKey(SunAnim.Track t, int frame, CFrame v) {
+        SunAnim.Key k = new SunAnim.Key(frame, v);
+        if (useLastEase) {
+            SunAnim.Key prev = null;
+            for (SunAnim.Key o : t.keys) {
+                if (o.frame < frame) {
+                    prev = o;
+                }
+            }
+            SunAnim.Key same = t.at(frame);
+            SunAnim.Key src = same != null ? same : prev;
+            if (src != null) {
+                k.ease = src.ease;
+                k.dir = src.dir;
+                k.p1 = src.p1;
+                k.p2 = src.p2;
+            }
+        }
+        t.put(k);
+    }
+
+    // ------------------------------------------------------------------ playback
+
+    private void togglePlay() {
+        if (playing) {
+            stopPlay();
+            return;
+        }
+        if (anim.keyCount() < 2) {
+            say("Add at least two keys before playing.");
+            return;
+        }
+        if (cur >= anim.length) {
+            cur = 0;
+        }
+        playPos = cur;
+        playing = true;
+        lastTick = System.nanoTime();
+        playBtn.setText("\u25A0");
+        handler.post(tick);
+    }
+
+    private void stopPlay() {
+        if (playing) {
+            playing = false;
+            handler.removeCallbacks(tick);
+            if (playBtn != null) {
+                playBtn.setText("\u25B6");
+            }
+        }
+    }
+
+    private void goTo(int f) {
+        stopPlay();
+        cur = Math.max(0, f);
+        tl.setPlayFrame(cur);
+        rig.apply(anim, cur);
+        studio.markDirty();
+        updateLabel();
+    }
+
+    private void jumpKey(int dir) {
+        int best = -1;
+        for (SunAnim.Track t : anim.tracks) {
+            if (tl.selTrack >= 0 && anim.tracks.indexOf(t) != tl.selTrack) {
+                continue;
+            }
+            for (SunAnim.Key k : t.keys) {
+                if (dir < 0 && k.frame < cur && (best < 0 || k.frame > best)) {
+                    best = k.frame;
+                }
+                if (dir > 0 && k.frame > cur && (best < 0 || k.frame < best)) {
+                    best = k.frame;
+                }
+            }
+        }
+        if (best < 0) {
+            say(dir < 0 ? "No earlier key." : "No later key.");
+            return;
+        }
+        goTo(best);
+        tl.keepPlayheadVisible();
+    }
+
+    private void jumpDialog() {
+        fieldsDialog("Jump to frame", new String[]{"Frame"}, new String[]{String.valueOf(cur)}, new boolean[]{true},
+                v -> {
+                    goTo(inum(v[0], cur));
+                    tl.keepPlayheadVisible();
+                });
+    }
+
+    // ------------------------------------------------------------------ key editing
+
+    private void setKeys(boolean all) {
+        stopPlay();
+        List<SunAnim.Track> targets = new ArrayList<>();
+        if (!all && tl.selTrack >= 0 && tl.selTrack < anim.tracks.size()) {
+            targets.add(anim.tracks.get(tl.selTrack));
+        } else {
+            targets.addAll(anim.tracks);
+        }
+        if (anim.keyCount() + targets.size() > MAX_KEYS) {
+            say("Too many keys (limit " + MAX_KEYS + ").");
+            return;
+        }
+        pushUndo();
+        int n = 0;
+        for (SunAnim.Track t : targets) {
+            CFrame v = rig.capture(t);
+            if (v != null) {
+                putKey(t, cur, v);
+                n++;
+            }
+        }
+        anim.normalize();
+        tl.invalidate();
+        updateLabel();
+        say("Keyed " + n + " track(s) at frame " + cur + ". Tap a track name to key just one.");
+    }
+
+    private void keyRest() {
+        stopPlay();
+        pushUndo();
+        int n = 0;
+        for (int i = 0; i < anim.tracks.size(); i++) {
+            if (tl.selTrack >= 0 && i != tl.selTrack) {
+                continue;
+            }
+            SunAnim.Track t = anim.tracks.get(i);
+            CFrame v = rig.rest(t);
+            if (v != null) {
+                putKey(t, cur, v);
+                n++;
+            }
+        }
+        anim.normalize();
+        rig.apply(anim, cur);
+        tl.invalidate();
+        say("Rest pose keyed on " + n + " track(s) at frame " + cur + ".");
+    }
+
+    private void deleteKeys() {
+        stopPlay();
+        List<SunAnim.Key> keys = targetKeys();
+        if (keys.isEmpty()) {
+            say("Select a key first.");
+            return;
+        }
+        pushUndo();
+        for (SunAnim.Track t : anim.tracks) {
+            t.keys.removeAll(keys);
+        }
+        tl.selected.clear();
+        rig.apply(anim, cur);
+        tl.invalidate();
+        updateLabel();
+        say("Deleted " + keys.size() + " key(s).");
+    }
+
+    private void selectAll() {
+        tl.selected.clear();
+        for (SunAnim.Track t : anim.tracks) {
+            tl.selected.addAll(t.keys);
+        }
+        tl.invalidate();
+        updateLabel();
+        say("Selected " + tl.selected.size() + " key(s).");
+    }
+
+    private void selectTrackKeys() {
+        if (tl.selTrack < 0 || tl.selTrack >= anim.tracks.size()) {
+            say("Tap a track name first.");
+            return;
+        }
+        tl.selected.clear();
+        tl.selected.addAll(anim.tracks.get(tl.selTrack).keys);
+        tl.invalidate();
+        updateLabel();
+    }
+
+    private void copyKeys() {
+        List<SunAnim.Key> keys = targetKeys();
+        if (keys.isEmpty()) {
+            say("Select keys to copy.");
+            return;
+        }
+        int min = Integer.MAX_VALUE;
+        for (SunAnim.Key k : keys) {
+            min = Math.min(min, k.frame);
+        }
+        clip.clear();
+        for (SunAnim.Track t : anim.tracks) {
+            for (SunAnim.Key k : t.keys) {
+                if (keys.contains(k)) {
+                    ClipKey c = new ClipKey();
+                    c.path = t.path;
+                    c.offset = k.frame - min;
+                    c.key = k.copy();
+                    clip.add(c);
+                }
+            }
+        }
+        say("Copied " + clip.size() + " key(s).");
+    }
+
+    private void pasteKeys() {
+        if (clip.isEmpty()) {
+            say("Nothing copied yet.");
+            return;
+        }
+        stopPlay();
+        pushUndo();
+        tl.selected.clear();
+        int n = 0;
+        for (ClipKey c : clip) {
+            SunAnim.Track t = anim.find(c.path);
+            if (t == null) {
+                continue;
+            }
+            SunAnim.Key k = c.key.copy();
+            k.frame = cur + c.offset;
+            t.put(k);
+            tl.selected.add(k);
+            n++;
+        }
+        anim.normalize();
+        rig.apply(anim, cur);
+        tl.invalidate();
+        updateLabel();
+        say("Pasted " + n + " key(s) at frame " + cur + ".");
+    }
+
+    private void reverseKeys() {
+        List<SunAnim.Key> keys = keysOrAll();
+        if (keys.size() < 2) {
+            say("Select at least two keys to reverse.");
+            return;
+        }
+        stopPlay();
+        pushUndo();
+        int min = Integer.MAX_VALUE;
+        int max = Integer.MIN_VALUE;
+        for (SunAnim.Key k : keys) {
+            min = Math.min(min, k.frame);
+            max = Math.max(max, k.frame);
+        }
+        for (SunAnim.Key k : keys) {
+            k.frame = min + max - k.frame;
+        }
+        anim.normalize();
+        rig.apply(anim, cur);
+        tl.invalidate();
+        say("Reversed " + keys.size() + " key(s).");
+    }
+
+    private void stretchDialog() {
+        fieldsDialog("Stretch", new String[]{"Factor (2 = twice as slow, 0.5 = twice as fast)"}, new String[]{"2"}, new boolean[]{true},
+                v -> {
+                    float factor = num(v[0], 1.0f);
+                    if (factor <= 0.0f) {
+                        say("The factor must be above 0.");
+                        return;
+                    }
+                    List<SunAnim.Key> keys = keysOrAll();
+                    if (keys.isEmpty()) {
+                        say("There are no keys.");
+                        return;
+                    }
+                    pushUndo();
+                    int min = Integer.MAX_VALUE;
+                    for (SunAnim.Key k : keys) {
+                        min = Math.min(min, k.frame);
+                    }
+                    for (SunAnim.Key k : keys) {
+                        k.frame = min + Math.round((k.frame - min) * factor);
+                    }
+                    anim.normalize();
+                    rig.apply(anim, cur);
+                    tl.invalidate();
+                    say("Stretched " + keys.size() + " key(s) by " + factor + ".");
+                });
+    }
+
+    private void offsetDialog() {
+        fieldsDialog("Offset", new String[]{"Frames (negative moves earlier)"}, new String[]{"5"}, new boolean[]{true},
+                v -> {
+                    int delta = inum(v[0], 0);
+                    List<SunAnim.Key> keys = keysOrAll();
+                    if (keys.isEmpty() || delta == 0) {
+                        say("Nothing to move.");
+                        return;
+                    }
+                    pushUndo();
+                    for (SunAnim.Key k : keys) {
+                        k.frame = Math.max(0, k.frame + delta);
+                    }
+                    anim.normalize();
+                    rig.apply(anim, cur);
+                    tl.invalidate();
+                    say("Moved " + keys.size() + " key(s) by " + delta + " frame(s).");
+                });
+    }
+
+    private void repeatDialog() {
+        fieldsDialog("Repeat", new String[]{"Times", "Gap between copies (frames)"}, new String[]{"2", "0"}, new boolean[]{true, true},
+                v -> {
+                    int times = Math.max(1, Math.min(50, inum(v[0], 1)));
+                    int gap = Math.max(0, inum(v[1], 0));
+                    List<SunAnim.Key> keys = keysOrAll();
+                    if (keys.isEmpty()) {
+                        say("There are no keys.");
+                        return;
+                    }
+                    int min = Integer.MAX_VALUE;
+                    int max = Integer.MIN_VALUE;
+                    for (SunAnim.Key k : keys) {
+                        min = Math.min(min, k.frame);
+                        max = Math.max(max, k.frame);
+                    }
+                    int span = max - min + gap;
+                    if (span <= 0) {
+                        say("The keys need some space between them to repeat.");
+                        return;
+                    }
+                    if (anim.keyCount() + keys.size() * times > MAX_KEYS) {
+                        say("Too many keys (limit " + MAX_KEYS + ").");
+                        return;
+                    }
+                    pushUndo();
+                    for (SunAnim.Track t : anim.tracks) {
+                        List<SunAnim.Key> mine = new ArrayList<>();
+                        for (SunAnim.Key k : t.keys) {
+                            if (keys.contains(k)) {
+                                mine.add(k);
+                            }
+                        }
+                        for (int n = 1; n <= times; n++) {
+                            for (SunAnim.Key k : mine) {
+                                SunAnim.Key c = k.copy();
+                                c.frame = k.frame + span * n;
+                                t.put(c);
+                            }
+                        }
+                    }
+                    anim.length = Math.max(anim.length, max + span * times);
+                    anim.normalize();
+                    tl.invalidate();
+                    say("Repeated " + keys.size() + " key(s) " + times + " time(s).");
+                });
+    }
+
+    private void fitTimeline() {
+        pushUndo();
+        anim.length = Math.max(1, anim.lastKeyFrame());
+        tl.fit();
+        updateLabel();
+        say("Length set to " + anim.length + " frames.");
+    }
+
+    // ------------------------------------------------------------------ ease and value editors
+
+    private void easeDialog() {
+        final List<SunAnim.Key> keys = targetKeys();
+        if (keys.isEmpty()) {
+            say("Select a key first (tap a diamond).");
+            return;
+        }
+        final Ui ui = Ui.INSTANCE;
+        final SunAnim.Key first = keys.get(0);
+        final String[] fam = {first.ease};
+        final int[] dir = {first.dir};
+        final float[] p = {first.p1, first.p2};
+        final TimelineView.CurveView curve = new TimelineView.CurveView(act);
+        final TextView famBtn = ui.text(act, "", 14.0f, ui.getTEXT(), true);
+        final TextView dirBtn = ui.text(act, "", 14.0f, ui.getTEXT(), true);
+        final EditText e1 = ui.input(act, f2(p[0]), "", true, false);
+        final EditText e2 = ui.input(act, f2(p[1]), "", true, false);
+        final TextView l1 = ui.text(act, "", 11.0f, ui.getDIM(), false);
+        final TextView l2 = ui.text(act, "Period", 11.0f, ui.getDIM(), false);
+        final Runnable refresh = new Runnable() {
+            @Override
+            public void run() {
+                famBtn.setText("Style: " + fam[0] + "  \u25BE");
+                boolean hasDir = SunEase.hasDirection(fam[0]);
+                dirBtn.setText(hasDir ? "Direction: " + SunEase.DIRS[dir[0]] + "  \u25BE" : "Direction: (none)");
+                boolean back = SunEase.isBack(fam[0]);
+                boolean elastic = SunEase.isElastic(fam[0]);
+                l1.setText(back ? "Overshoot" : "Amplitude");
+                int vis1 = back || elastic ? View.VISIBLE : View.GONE;
+                l1.setVisibility(vis1);
+                e1.setVisibility(vis1);
+                l2.setVisibility(elastic ? View.VISIBLE : View.GONE);
+                e2.setVisibility(elastic ? View.VISIBLE : View.GONE);
+                curve.set(fam[0], dir[0], num(e1.getText().toString(), p[0]), num(e2.getText().toString(), p[1]));
+            }
+        };
+        famBtn.setOnClickListener(v -> Dialogs.INSTANCE.themed(act).setTitle("Easing style")
+                .setItems(SunEase.FAMILIES, (d, which) -> {
+                    fam[0] = SunEase.FAMILIES[which];
+                    e1.setText(f2(SunEase.defaultP1(fam[0])));
+                    e2.setText(f2(SunEase.defaultP2(fam[0])));
+                    refresh.run();
+                }).show());
+        dirBtn.setOnClickListener(v -> {
+            if (SunEase.hasDirection(fam[0])) {
+                Dialogs.INSTANCE.themed(act).setTitle("Easing direction")
+                        .setItems(SunEase.DIRS, (d, which) -> {
+                            dir[0] = which;
+                            refresh.run();
+                        }).show();
+            }
+        });
+        android.text.TextWatcher watcher = new android.text.TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int a, int b, int c) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int a, int b, int c) {
+                curve.set(fam[0], dir[0], num(e1.getText().toString(), p[0]), num(e2.getText().toString(), p[1]));
+            }
+
+            @Override
+            public void afterTextChanged(android.text.Editable s) {
+            }
+        };
+        e1.addTextChangedListener(watcher);
+        e2.addTextChangedListener(watcher);
+
+        LinearLayout box = new LinearLayout(act);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = ui.dp(act, 14.0f);
+        box.setPadding(pad, pad, pad, pad);
+        box.addView(curve, new LinearLayout.LayoutParams(-1, ui.dp(act, 130.0f)));
+        famBtn.setPadding(0, pad, 0, pad / 2);
+        dirBtn.setPadding(0, pad / 2, 0, pad / 2);
+        box.addView(famBtn);
+        box.addView(dirBtn);
+        box.addView(l1);
+        box.addView(e1);
+        box.addView(l2);
+        box.addView(e2);
+        ScrollView sv = new ScrollView(act);
+        sv.addView(box);
+        refresh.run();
+        Dialogs.INSTANCE.themed(act)
+                .setTitle("Ease (" + keys.size() + " key" + (keys.size() == 1 ? "" : "s") + ")")
+                .setView(sv)
+                .setPositiveButton("Apply", (d, w) -> {
+                    pushUndo();
+                    float a = num(e1.getText().toString(), SunEase.defaultP1(fam[0]));
+                    float b = num(e2.getText().toString(), SunEase.defaultP2(fam[0]));
+                    for (SunAnim.Key k : keys) {
+                        k.ease = fam[0];
+                        k.dir = SunEase.hasDirection(fam[0]) ? dir[0] : 0;
+                        k.p1 = a;
+                        k.p2 = Math.max(0.01f, b);
+                    }
+                    rig.apply(anim, cur);
+                    tl.invalidate();
+                    say("Easing set to " + fam[0] + (SunEase.hasDirection(fam[0]) ? " " + SunEase.DIRS[dir[0]] : "") + ".");
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void valueDialog() {
+        List<SunAnim.Key> keys = targetKeys();
+        if (keys.isEmpty()) {
+            say("Select a key first (tap a diamond).");
+            return;
+        }
+        final SunAnim.Key k = keys.get(0);
+        Vector3 o = k.cf.toOrientation();
+        double deg = 180.0d / Math.PI;
+        fieldsDialog("Key value (frame " + k.frame + ")",
+                new String[]{"Position X", "Position Y", "Position Z", "Rotation X (deg)", "Rotation Y (deg)", "Rotation Z (deg)"},
+                new String[]{f2(k.cf.getX()), f2(k.cf.getY()), f2(k.cf.getZ()),
+                    f2((float) (o.getX() * deg)), f2((float) (o.getY() * deg)), f2((float) (o.getZ() * deg))},
+                new boolean[]{true, true, true, true, true, true},
+                v -> {
+                    pushUndo();
+                    float rad = (float) (Math.PI / 180.0d);
+                    k.cf = CFrame.INSTANCE.fromOrientation(num(v[3], 0) * rad, num(v[4], 0) * rad, num(v[5], 0) * rad)
+                            .withPosition(new Vector3(num(v[0], 0), num(v[1], 0), num(v[2], 0)));
+                    rig.apply(anim, cur);
+                    studio.markDirty();
+                    tl.invalidate();
+                    say("Value updated.");
+                });
+    }
+
+    // ------------------------------------------------------------------ markers and settings
+
+    private void markersDialog() {
+        final List<SunAnim.Marker> list = new ArrayList<>(anim.markers);
+        String[] items = new String[list.size()];
+        for (int i = 0; i < items.length; i++) {
+            SunAnim.Marker m = list.get(i);
+            items[i] = "frame " + m.frame + "  \u2022  " + m.name + (m.value.length() > 0 ? " = " + m.value : "");
+        }
+        AlertDialog.Builder b = Dialogs.INSTANCE.themed(act).setTitle("Markers (" + list.size() + ")")
+                .setPositiveButton("Add at frame " + cur, (d, w) -> fieldsDialog("New marker",
+                        new String[]{"Name", "Value"}, new String[]{"Marker", ""}, new boolean[]{false, false},
+                        v -> {
+                            pushUndo();
+                            SunAnim.Marker m = new SunAnim.Marker(cur, v[0].length() == 0 ? "Marker" : v[0]);
+                            m.value = v[1];
+                            anim.markers.add(m);
+                            anim.normalize();
+                            tl.invalidate();
+                            say("Marker added at frame " + cur + ".");
+                        }))
+                .setNegativeButton("Close", null);
+        if (items.length > 0) {
+            b.setItems(items, (d, which) -> {
+                final SunAnim.Marker m = list.get(which);
+                Dialogs.INSTANCE.themed(act).setTitle(m.name)
+                        .setPositiveButton("Jump", (d2, w2) -> goTo(m.frame))
+                        .setNeutralButton("Delete", (d2, w2) -> {
+                            pushUndo();
+                            anim.markers.remove(m);
+                            tl.invalidate();
+                            say("Marker deleted.");
+                        })
+                        .setNegativeButton("Cancel", null)
+                        .show();
+            });
+        }
+        b.show();
+    }
+
+    private void settingsDialog() {
+        final Ui ui = Ui.INSTANCE;
+        LinearLayout box = new LinearLayout(act);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = ui.dp(act, 14.0f);
+        box.setPadding(pad, pad, pad, pad);
+        final EditText name = ui.input(act, anim.name, "Name", false, false);
+        final EditText fps = ui.input(act, String.valueOf(anim.fps), "FPS", true, false);
+        final EditText len = ui.input(act, String.valueOf(anim.length), "Length", true, false);
+        final CheckBox loop = new CheckBox(act);
+        loop.setText("Loop");
+        loop.setTextColor(ui.getTEXT());
+        loop.setChecked(anim.loop);
+        final int[] pr = {anim.priority};
+        final TextView prBtn = ui.text(act, "Priority: " + SunAnim.PRIORITIES[pr[0]] + "  \u25BE", 14.0f, ui.getTEXT(), true);
+        prBtn.setPadding(0, pad / 2, 0, pad / 2);
+        prBtn.setOnClickListener(v -> Dialogs.INSTANCE.themed(act).setTitle("Priority")
+                .setItems(SunAnim.PRIORITIES, (d, which) -> {
+                    pr[0] = which;
+                    prBtn.setText("Priority: " + SunAnim.PRIORITIES[which] + "  \u25BE");
+                }).show());
+        box.addView(ui.text(act, "Name", 11.0f, ui.getDIM(), false));
+        box.addView(name);
+        box.addView(ui.text(act, "Frames per second", 11.0f, ui.getDIM(), false));
+        box.addView(fps);
+        box.addView(ui.text(act, "Length (frames)", 11.0f, ui.getDIM(), false));
+        box.addView(len);
+        box.addView(loop);
+        box.addView(prBtn);
+        ScrollView sv = new ScrollView(act);
+        sv.addView(box);
+        Dialogs.INSTANCE.themed(act).setTitle("Animation settings").setView(sv)
+                .setPositiveButton("OK", (d, w) -> {
+                    pushUndo();
+                    anim.name = safeName(name.getText().toString());
+                    anim.fps = Math.max(1, Math.min(120, inum(fps.getText().toString(), anim.fps)));
+                    anim.length = Math.max(1, inum(len.getText().toString(), anim.length));
+                    anim.loop = loop.isChecked();
+                    anim.priority = pr[0];
+                    anim.normalize();
+                    tl.invalidate();
+                    updateLabel();
+                    say("Settings updated.");
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    // ------------------------------------------------------------------ save / load / export / import
 
     private Instance findScript(String name) {
         for (Instance c : root.getChildren()) {
@@ -372,379 +1166,188 @@ public final class AnimatorUi {
         return null;
     }
 
-    /** Loads a saved animation from root's Anim_ scripts. name == null loads the first one found. */
-    private boolean loadSaved(String name) {
+    private List<Instance> savedScripts() {
+        List<Instance> out = new ArrayList<>();
+        for (Instance c : root.getChildren()) {
+            if (c.isA("Script") && c.getName().startsWith("Anim_")) {
+                out.add(c);
+            }
+        }
+        return out;
+    }
+
+    /** Loads a saved animation. name == null loads the first one found. */
+    private boolean loadFromModel(String name) {
         try {
-            Instance found = null;
-            for (Instance c : root.getChildren()) {
-                if (c.isA("Script") && c.getName().startsWith("Anim_")
-                        && (name == null || c.getName().equals("Anim_" + name))) {
-                    found = c;
-                    break;
+            for (Instance c : savedScripts()) {
+                if (name != null && !c.getName().equals("Anim_" + name)) {
+                    continue;
                 }
-            }
-            if (found == null) {
-                return false;
-            }
-            Object src = found.get("Source");
-            if (!(src instanceof String)) {
-                return false;
-            }
-            String s = (String) src;
-            int a = s.indexOf(HEADER);
-            int b = s.indexOf("\n]=]", a);
-            if (a < 0 || b < 0) {
-                return false;
-            }
-            JSONObject o = new JSONObject(s.substring(a + HEADER.length(), b).trim());
-            JSONArray pj = o.getJSONArray("parts");
-            int[] map = new int[pj.length()];
-            for (int i = 0; i < map.length; i++) {
-                map[i] = paths.indexOf(pj.getString(i));
-            }
-            TreeMap<Float, CFrame[]> loaded = new TreeMap<>();
-            JSONArray kj = o.getJSONArray("keys");
-            for (int k = 0; k < kj.length() && k < MAX_KEYS; k++) {
-                JSONObject ko = kj.getJSONObject(k);
-                CFrame[] pose = new CFrame[parts.size()];
-                for (int i = 0; i < pose.length; i++) {
-                    pose[i] = base.get(i);
+                Object src = c.get("Source");
+                SunAnim loaded = src instanceof String ? SunAnim.fromScript((String) src) : null;
+                if (loaded == null) {
+                    continue;
                 }
-                JSONArray cfs = ko.getJSONArray("cf");
-                for (int i = 0; i < cfs.length() && i < map.length; i++) {
-                    if (map[i] >= 0) {
-                        pose[map[i]] = cfFrom(cfs.getJSONArray(i));
-                    }
+                if (loaded.name == null || loaded.name.length() == 0) {
+                    loaded.name = c.getName().substring(5);
                 }
-                loaded.put(snap((float) ko.getDouble("t")), pose);
+                anim = rig.fit(loaded);
+                anim.name = safeName(loaded.name);
+                return true;
             }
-            if (loaded.isEmpty()) {
-                return false;
-            }
-            keys.clear();
-            keys.putAll(loaded);
-            length = (float) o.optDouble("length", 2.0d);
-            loop = o.optBoolean("loop", true);
-            String n = o.optString("name", found.getName().substring(5));
-            animName = safeName(n);
-            return true;
-        } catch (Throwable t) {
-            return false;
+        } catch (Throwable ignored) {
         }
+        return false;
     }
 
-    // ------------------------------------------------------------------ UI
-
-    private void showTime() {
-        timeLabel.setText(fmt(time) + " s / " + fmt(length) + " s");
-        bar.setProgress(Math.round(1000.0f * time / Math.max(0.05f, length)));
-    }
-
-    private void refreshInfo() {
-        StringBuilder ks = new StringBuilder();
-        for (Float k : keys.keySet()) {
-            ks.append(ks.length() == 0 ? "" : ", ").append(String.format(Locale.US, "%.2f", k));
-        }
-        int unanchored = 0;
-        for (Instance p : parts) {
-            if (Boolean.FALSE.equals(p.get("Anchored"))) {
-                unanchored++;
-            }
-        }
-        String extra = (skipped > 0 ? "\n" + skipped + " part(s) skipped (limit " + MAX_PARTS + " parts, or duplicate names)." : "")
-                + (unanchored > 0 ? "\n" + unanchored + " part(s) are not Anchored. Anchor them so physics doesn't fight the animation." : "");
-        info.setText(parts.size() + " part(s) \u2022 " + keys.size() + " keyframe(s): " + ks + extra);
-    }
-
-    private void say(String s) {
-        status.setText(s);
-    }
-
-    private TextView btn(String label, final Runnable r) {
-        final Ui ui = Ui.INSTANCE;
-        return ui.button(act, label, ui.getHOVER(), new Function1<View, Unit>() {
-            @Override
-            public Unit invoke(View v) {
-                try {
-                    r.run();
-                } catch (Throwable t) {
-                    say("Error: " + t);
-                }
-                return Unit.INSTANCE;
-            }
-        });
-    }
-
-    private LinearLayout row(View... views) {
-        LinearLayout l = new LinearLayout(act);
-        l.setOrientation(LinearLayout.HORIZONTAL);
-        for (View v : views) {
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, 1.0f);
-            lp.setMargins(Ui.INSTANCE.dp(act, 2.0f), Ui.INSTANCE.dp(act, 3.0f), Ui.INSTANCE.dp(act, 2.0f), Ui.INSTANCE.dp(act, 3.0f));
-            l.addView(v, lp);
-        }
-        return l;
-    }
-
-    private void build() {
-        final Ui ui = Ui.INSTANCE;
-        LinearLayout content = new LinearLayout(act);
-        content.setOrientation(LinearLayout.VERTICAL);
-        int pad = ui.dp(act, 12.0f);
-        content.setPadding(pad, pad, pad, pad);
-
-        TextView title = ui.text(act, "Animator \u2014 " + root.getName(), 16.0f, ui.getTEXT(), true);
-        content.addView(row(title, btn("Close", new Runnable() {
-            @Override
-            public void run() {
-                close(true);
-            }
-        })));
-        content.addView(ui.text(act, "Pose the parts with the normal tools, then tap Set key here. Drag the bar to preview.", 11.0f, ui.getDIM(), false));
-        info = ui.text(act, "", 12.0f, ui.getTEXT(), false);
-        info.setPadding(0, ui.dp(act, 6.0f), 0, ui.dp(act, 4.0f));
-        content.addView(info);
-
-        timeLabel = ui.text(act, "", 13.0f, ui.getTEXT(), true);
-        content.addView(timeLabel);
-        bar = new SeekBar(act);
-        bar.setMax(1000);
-        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override
-            public void onProgressChanged(SeekBar s, int progress, boolean fromUser) {
-                if (fromUser) {
-                    time = snap(progress / 1000.0f * length);
-                    timeLabel.setText(fmt(time) + " s / " + fmt(length) + " s");
-                    applyPose(time);
-                }
-            }
-
-            @Override
-            public void onStartTrackingTouch(SeekBar s) {
-                stopPlay();
-            }
-
-            @Override
-            public void onStopTrackingTouch(SeekBar s) {
-            }
-        });
-        content.addView(bar);
-
-        content.addView(row(
-                btn("\u25C0 Key", new Runnable() {
-                    @Override
-                    public void run() {
-                        Float k = keys.lowerKey(time - 0.001f);
-                        goTo(k == null ? 0.0f : k);
-                    }
-                }),
-                btn("Key \u25B6", new Runnable() {
-                    @Override
-                    public void run() {
-                        Float k = keys.higherKey(time + 0.001f);
-                        if (k != null) {
-                            goTo(k);
-                        }
-                    }
-                }),
-                btn("Set key here", new Runnable() {
-                    @Override
-                    public void run() {
-                        setKey();
-                    }
-                }),
-                btn("Delete key", new Runnable() {
-                    @Override
-                    public void run() {
-                        deleteKey();
-                    }
-                })));
-
-        playBtn = btn("\u25B6 Play", new Runnable() {
-            @Override
-            public void run() {
-                togglePlay();
-            }
-        });
-        content.addView(row(playBtn, btn("Reset pose", new Runnable() {
-            @Override
-            public void run() {
-                stopPlay();
-                resetPose();
-                time = 0.0f;
-                showTime();
-                say("Model put back to the pose it had when you opened the Animator.");
-            }
-        })));
-
-        etName = ui.input(act, animName, "Animation name", false, false);
-        etLength = ui.input(act, fmt(length), "Seconds", true, false);
-        cbLoop = new CheckBox(act);
-        cbLoop.setText("Loop");
-        cbLoop.setTextColor(ui.getTEXT());
-        cbLoop.setChecked(loop);
-        content.addView(row(etName, etLength, cbLoop));
-
-        content.addView(row(
-                btn("Save to model", new Runnable() {
-                    @Override
-                    public void run() {
-                        save();
-                    }
-                }),
-                btn("Load", new Runnable() {
-                    @Override
-                    public void run() {
-                        stopPlay();
-                        String n = safeName(etName.getText().toString());
-                        if (loadSaved(n)) {
-                            etName.setText(animName);
-                            etLength.setText(fmt(length));
-                            cbLoop.setChecked(loop);
-                            time = 0.0f;
-                            applyPose(0.0f);
-                            showTime();
-                            refreshInfo();
-                            say("Loaded Anim_" + n + ".");
-                        } else {
-                            say("No saved animation named Anim_" + n + " in this model.");
-                        }
-                    }
-                })));
-
-        status = ui.text(act, "Close puts the model back to its starting pose. Save first to keep your animation.", 11.0f, ui.getDIM(), false);
-        status.setPadding(0, ui.dp(act, 6.0f), 0, 0);
-        content.addView(status);
-
-        ScrollView sv = new ScrollView(act);
-        sv.addView(content);
-
-        dialog = Dialogs.INSTANCE.themed(act).setView(sv).setCancelable(false).create();
-        Window w = dialog.getWindow();
-        if (w != null) {
-            // not modal: touches outside the panel still reach the viewport, so you can move parts while it is open
-            w.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL);
-            w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-            w.setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-            DisplayMetrics dm = act.getResources().getDisplayMetrics();
-            w.setLayout(Math.min(dm.widthPixels, Math.max(ui.dp(act, 360.0f), dm.widthPixels * 6 / 10)),
-                    Math.max(ui.dp(act, 260.0f), dm.heightPixels * 55 / 100));
-        }
-        dialog.show();
-        showTime();
-        refreshInfo();
-    }
-
-    private void goTo(float t) {
-        stopPlay();
-        time = snap(t);
-        showTime();
-        applyPose(time);
-    }
-
-    private void setKey() {
-        stopPlay();
-        readLength();
-        float t = snap(time);
-        if (!keys.containsKey(t) && keys.size() >= MAX_KEYS) {
-            say("Limit reached: " + MAX_KEYS + " keyframes per animation.");
+    private void loadDialog() {
+        final List<Instance> scripts = savedScripts();
+        if (scripts.isEmpty()) {
+            say("No saved animations (Anim_ scripts) in " + root.getName() + ".");
             return;
         }
-        keys.put(t, currentPose());
-        studio.markDirty();
-        readLength();
-        showTime();
-        refreshInfo();
-        say("Keyframe set at " + fmt(t) + " s.");
-    }
-
-    private void deleteKey() {
-        stopPlay();
-        float t = snap(time);
-        if (t <= 0.0f) {
-            say("The key at 0.00 s is the starting pose and can't be deleted. Set it again to change it.");
-            return;
+        String[] names = new String[scripts.size()];
+        for (int i = 0; i < names.length; i++) {
+            names[i] = scripts.get(i).getName().substring(5);
         }
-        if (keys.remove(t) == null) {
-            say("There is no keyframe at " + fmt(t) + " s. Use Key buttons to jump to one.");
-            return;
-        }
-        refreshInfo();
-        say("Deleted the keyframe at " + fmt(t) + " s.");
-    }
-
-    private void togglePlay() {
-        if (playing) {
+        Dialogs.INSTANCE.themed(act).setTitle("Load animation").setItems(names, (d, which) -> {
             stopPlay();
-            return;
-        }
-        readLength();
-        if (keys.size() < 2) {
-            say("Add at least two keyframes (for example 0.00 s and 1.00 s) before playing.");
-            return;
-        }
-        loop = cbLoop.isChecked();
-        if (time >= length) {
-            time = 0.0f;
-        }
-        playing = true;
-        lastTick = System.nanoTime();
-        playBtn.setText("\u25A0 Stop");
-        handler.post(tick);
-    }
-
-    private void stopPlay() {
-        if (playing) {
-            playing = false;
-            handler.removeCallbacks(tick);
-            if (playBtn != null) {
-                playBtn.setText("\u25B6 Play");
+            pushUndo();
+            SunAnim before = anim;
+            if (loadFromModel(names[which])) {
+                cur = 0;
+                rebind();
+                say("Loaded Anim_" + names[which] + ".");
+            } else {
+                anim = before;
+                say("Couldn't read Anim_" + names[which] + ".");
             }
-        }
+        }).show();
     }
 
     private void save() {
         stopPlay();
-        readLength();
-        loop = cbLoop.isChecked();
-        animName = safeName(etName.getText().toString());
-        etName.setText(animName);
-        if (keys.size() < 2) {
-            say("Add at least two keyframes before saving.");
+        anim.normalize();
+        if (anim.keyCount() < 2) {
+            say("Add at least two keys before saving.");
             return;
         }
-        if (parts.size() * keys.size() > MAX_ENTRIES) {
-            say("Too big: " + parts.size() + " parts x " + keys.size() + " keys is over " + MAX_ENTRIES + ". Remove some keyframes.");
-            return;
-        }
-        if (studio.isPlaying()) {
-            say("Stop the playtest first.");
+        if (anim.keyCount() > MAX_KEYS) {
+            say("Too many keys (limit " + MAX_KEYS + ").");
             return;
         }
         try {
-            String src = buildSource();
-            Instance script = findScript(animName);
+            String src = anim.buildScript();
+            Instance script = findScript(anim.name);
             if (script == null) {
                 script = InstanceFactory.INSTANCE.create("Script");
-                script.setName("Anim_" + animName);
+                script.setName("Anim_" + anim.name);
                 script.setParent(root, -1);
             }
             script.set("Source", src, true);
             studio.markDirty();
-            say("Saved as Script \"Anim_" + animName + "\" inside " + root.getName() + ". It plays when the game runs. Save the place to keep it.");
+            dirty = false;
+            say("Saved as Script \"Anim_" + anim.name + "\" inside " + root.getName() + ". It plays when the game runs. Save the place to keep it.");
         } catch (Throwable t) {
             say("Couldn't save: " + t);
         }
     }
 
-    private void close(boolean restore) {
+    private void exportSequence() {
         stopPlay();
-        if (restore) {
-            try {
-                resetPose();
-                studio.markDirty();
-            } catch (Throwable ignored) {
+        anim.normalize();
+        int joints = 0;
+        int parts = 0;
+        for (SunAnim.Track t : anim.tracks) {
+            if (t.keys.isEmpty()) {
+                continue;
             }
+            if (t.kind == SunAnim.JOINT) {
+                joints++;
+            } else {
+                parts++;
+            }
+        }
+        if (joints == 0) {
+            say("Nothing to export: a KeyframeSequence needs keys on Motor6D joint tracks.");
+            return;
+        }
+        try {
+            for (Instance c : new ArrayList<>(root.getChildren())) {
+                if ("KeyframeSequence".equals(c.getClassName()) && c.getName().equals(anim.name)) {
+                    c.destroy();
+                }
+            }
+            Instance seq = anim.toKeyframeSequence();
+            seq.setParent(root, -1);
+            studio.markDirty();
+            say("Exported KeyframeSequence \"" + anim.name + "\" into " + root.getName() + " (" + joints + " joint track(s))."
+                    + (parts > 0 ? " " + parts + " part track(s) were left out." : ""));
+        } catch (Throwable t) {
+            say("Couldn't export: " + t);
+        }
+    }
+
+    private void importSequence() {
+        stopPlay();
+        Instance seq = null;
+        for (Instance i : new ArrayList<>(studio.getSelection())) {
+            if ("KeyframeSequence".equals(i.getClassName())) {
+                seq = i;
+                break;
+            }
+        }
+        if (seq == null) {
+            for (Instance c : root.getChildren()) {
+                if ("KeyframeSequence".equals(c.getClassName())) {
+                    seq = c;
+                    break;
+                }
+            }
+        }
+        if (seq == null) {
+            say("Select a KeyframeSequence in the Explorer (or put one inside the model), then try again.");
+            return;
+        }
+        pushUndo();
+        int n = anim.importKeyframeSequence(seq);
+        if (n == 0) {
+            undo.pop();
+            say("No pose in \"" + seq.getName() + "\" matches a joint of this rig.");
+            return;
+        }
+        anim.name = safeName(seq.getName());
+        rebind();
+        tl.fit();
+        say("Imported " + n + " joint track(s) from \"" + seq.getName() + "\".");
+    }
+
+    // ------------------------------------------------------------------ closing
+
+    private void requestClose() {
+        if (!dirty) {
+            close();
+            return;
+        }
+        Dialogs.INSTANCE.themed(act).setTitle("Close the Animator?")
+                .setMessage("You have changes that are not saved to the model. The model goes back to its opening pose.")
+                .setPositiveButton("Save and close", (d, w) -> {
+                    save();
+                    if (!dirty) {
+                        close();
+                    }
+                })
+                .setNeutralButton("Close anyway", (d, w) -> close())
+                .setNegativeButton("Keep editing", null)
+                .show();
+    }
+
+    private void close() {
+        stopPlay();
+        try {
+            rig.restore();
+            studio.markDirty();
+        } catch (Throwable ignored) {
         }
         try {
             if (dialog != null && dialog.isShowing()) {
