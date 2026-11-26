@@ -33,6 +33,11 @@ public final class GeminiClient {
             super(message);
             this.code = code;
         }
+
+        /** True for errors another model may not have: model missing, free quota used up, or Google overloaded. */
+        public boolean tryNextModel() {
+            return code == 404 || code == 429 || code >= 500;
+        }
     }
 
     private GeminiClient() {
@@ -169,7 +174,8 @@ public final class GeminiClient {
             return "Free limit reached. Wait a minute and try again, or try a lighter model in settings.";
         }
         if (code >= 500) {
-            return "Gemini is having trouble right now (" + code + "). Try again in a moment.";
+            return "Gemini is having trouble (error " + code + ")" + (api.length() > 0 ? ": " + clip(api) : ".")
+                    + " This is on Google's side and is usually temporary.";
         }
         return "Gemini error " + code + (api.length() > 0 ? ": " + clip(api) : ".");
     }

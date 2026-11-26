@@ -362,20 +362,37 @@ public final class GeminiUi {
             String out = "Something went wrong.";
             boolean ok = false;
             String[] tries = mdl.length() > 0 ? new String[]{mdl} : GeminiClient.FALLBACKS;
+            StringBuilder tried = new StringBuilder();
             for (String m : tries) {
-                try {
-                    out = GeminiClient.generate(apiKey, m, SYSTEM, snapshot);
-                    ok = true;
-                    break;
-                } catch (GeminiClient.GeminiException e) {
-                    out = e.getMessage();
-                    if (e.code != 404) {
+                tried.append(tried.length() == 0 ? "" : ", ").append(m);
+                boolean next = false;
+                for (int attempt = 0; attempt < 2 && !ok; attempt++) {
+                    try {
+                        out = GeminiClient.generate(apiKey, m, SYSTEM, snapshot);
+                        ok = true;
+                    } catch (GeminiClient.GeminiException e) {
+                        out = e.getMessage();
+                        if (e.code >= 500 && attempt == 0) {
+                            try {
+                                Thread.sleep(1500L);
+                            } catch (InterruptedException ie) {
+                                break;
+                            }
+                            continue;
+                        }
+                        next = e.tryNextModel();
+                        break;
+                    } catch (Throwable t) {
+                        out = "Something went wrong.";
                         break;
                     }
-                } catch (Throwable t) {
-                    out = "Something went wrong.";
+                }
+                if (ok || !next) {
                     break;
                 }
+            }
+            if (!ok && tries.length > 1 && tried.indexOf(",") >= 0) {
+                out = out + "\n(models tried: " + tried + ")";
             }
             final String text = out;
             final boolean good = ok;
