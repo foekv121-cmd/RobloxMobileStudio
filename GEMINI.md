@@ -3,7 +3,7 @@
 A chat helper for Luau and your game, using Google's Gemini API with **your own free API key**.
 
 1. Get a key at https://aistudio.google.com/apikey (Google account needed).
-2. File > Gemini AI > gear button: paste the key. Leave the model box empty; the app picks a working Gemini model itself.
+2. File > Gemini AI > gear button: paste the key. Leave the model box empty. The app asks Google which Flash models your key can use and picks the newest, so retired model names don't break it.
 3. Ask a question. Turn **Script: on** to include the Script / LocalScript / ModuleScript you have selected (first 12,000 characters).
 4. **Insert code** puts the last ```lua block of the reply into a new Script named GeminiScript. **Copy** copies the whole reply.
 

@@ -60,6 +60,7 @@ public final class GeminiUi {
     private static int lastX = Integer.MIN_VALUE;
     private static int lastY = Integer.MIN_VALUE;
     private static GeminiUi current;
+    private static volatile List<String> discovered;
 
     private final Activity act;
     private final Studio studio;
@@ -109,7 +110,8 @@ public final class GeminiUi {
     private String model() {
         // empty means automatic: the app picks a working Gemini model itself
         String m = prefs().getString("model", "");
-        return GeminiClient.validModel(m) && !GeminiClient.DEFAULT_MODEL.equals(m) ? m : "";
+        boolean old = GeminiClient.DEFAULT_MODEL.equals(m) || "gemini-2.5-flash".equals(m) || "gemini-2.0-flash".equals(m);
+        return GeminiClient.validModel(m) && !old ? m : "";
     }
 
     // ------------------------------------------------------------------ UI
@@ -361,7 +363,32 @@ public final class GeminiUi {
         NET.execute(() -> {
             String out = "Something went wrong.";
             boolean ok = false;
-            String[] tries = mdl.length() > 0 ? new String[]{mdl} : GeminiClient.FALLBACKS;
+            List<String> list = new ArrayList<>();
+            if (mdl.length() > 0) {
+                list.add(mdl);
+            } else {
+                List<String> found = discovered;
+                if (found == null) {
+                    try {
+                        found = GeminiClient.discover(apiKey);
+                        discovered = found;
+                    } catch (Throwable ignoredDiscover) {
+                    }
+                }
+                if (found != null) {
+                    for (String x : found) {
+                        if (list.size() < 3) {
+                            list.add(x);
+                        }
+                    }
+                }
+                for (String f : GeminiClient.FALLBACKS) {
+                    if (!list.contains(f)) {
+                        list.add(f);
+                    }
+                }
+            }
+            String[] tries = list.toArray(new String[0]);
             StringBuilder tried = new StringBuilder();
             for (String m : tries) {
                 tried.append(tried.length() == 0 ? "" : ", ").append(m);
@@ -390,6 +417,9 @@ public final class GeminiUi {
                 if (ok || !next) {
                     break;
                 }
+            }
+            if (!ok) {
+                discovered = null;
             }
             if (!ok && tries.length > 1 && tried.indexOf(",") >= 0) {
                 out = out + "\n(models tried: " + tried + ")";
@@ -580,6 +610,7 @@ public final class GeminiUi {
                             return;
                         }
                         e.putString("key", nk);
+                        discovered = null;
                     }
                     String nm = modelIn.getText().toString().trim();
                     if (nm.length() == 0 || !GeminiClient.validModel(nm)) {

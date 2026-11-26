@@ -18,9 +18,11 @@ import org.json.JSONObject;
  * (never in the URL). It is not logged and is not reachable from plugins.
  */
 public final class GeminiClient {
-    public static final String DEFAULT_MODEL = "gemini-2.5-flash";
-    /** Tried in order when no model is chosen: if Google retires one, the next is used automatically. */
-    public static final String[] FALLBACKS = {DEFAULT_MODEL, "gemini-flash-latest", "gemini-2.0-flash"};
+    public static final String DEFAULT_MODEL = "gemini-3.8-flash";
+    /** Last resort when Google's model list can't be read. Normally the app asks Google which models exist (see discover). */
+    public static final String[] FALLBACKS = {DEFAULT_MODEL, "gemini-flash-latest", "gemini-2.5-flash"};
+    private static final String ROOT = "https://generativelanguage.googleapis.com/v1beta/";
+    private static final Pattern FLASH = Pattern.compile("models/gemini-(\\d+(?:\\.\\d+)?)-flash");
     private static final String HOST = "https://generativelanguage.googleapis.com/v1beta/models/";
     private static final Pattern MODEL_OK = Pattern.compile("[A-Za-z0-9._-]{1,60}");
     private static final int MAX_BYTES = 2 * 1024 * 1024;
@@ -97,6 +99,70 @@ public final class GeminiClient {
     }
 
     /**
+     * Asks Google which models this key can use and returns the plain "flash" ones that support generateContent,
+     * newest first (for example gemini-3.8-flash before gemini-2.5-flash). This way a renamed or retired model
+     * doesn't break the app. Blocks, so call it off the main thread.
+     */
+    public static java.util.List<String> discover(String apiKey) throws GeminiException {
+        java.util.List<double[]> versions = new java.util.ArrayList<>();
+        java.util.List<String> names = new java.util.ArrayList<>();
+        String token = "";
+        for (int page = 0; page < 5; page++) {
+            HttpURLConnection c = null;
+            try {
+                String url = ROOT + "models?pageSize=100" + (token.length() > 0 ? "&pageToken=" + java.net.URLEncoder.encode(token, "UTF-8") : "");
+                c = (HttpURLConnection) new URL(url).openConnection();
+                c.setInstanceFollowRedirects(false);
+                c.setConnectTimeout(10000);
+                c.setReadTimeout(15000);
+                c.setRequestProperty("x-goog-api-key", apiKey.trim());
+                int code = c.getResponseCode();
+                InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
+                String body = in == null ? "" : read(in);
+                if (code >= 400) {
+                    throw new GeminiException(code, describe(code, body));
+                }
+                JSONObject o = new JSONObject(body);
+                JSONArray models = o.optJSONArray("models");
+                for (int i = 0; models != null && i < models.length(); i++) {
+                    JSONObject m = models.getJSONObject(i);
+                    String name = m.optString("name", "");
+                    java.util.regex.Matcher mt = FLASH.matcher(name);
+                    JSONArray methods = m.optJSONArray("supportedGenerationMethods");
+                    boolean canGenerate = false;
+                    for (int j = 0; methods != null && j < methods.length(); j++) {
+                        if ("generateContent".equals(methods.optString(j))) {
+                            canGenerate = true;
+                        }
+                    }
+                    if (canGenerate && mt.matches()) {
+                        versions.add(new double[]{Double.parseDouble(mt.group(1)), names.size()});
+                        names.add(name.substring("models/".length()));
+                    }
+                }
+                token = o.optString("nextPageToken", "");
+                if (token.length() == 0) {
+                    break;
+                }
+            } catch (GeminiException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new GeminiException(0, "Couldn't read Google's model list.");
+            } finally {
+                if (c != null) {
+                    c.disconnect();
+                }
+            }
+        }
+        java.util.Collections.sort(versions, (x, y) -> Double.compare(y[0], x[0]));
+        java.util.List<String> out = new java.util.ArrayList<>();
+        for (double[] v : versions) {
+            out.add(names.get((int) v[1]));
+        }
+        return out;
+    }
+
+    /**
      * Checks the connection step by step and returns a readable report: DNS, reaching Google, and whether the key works.
      * Blocks, so call it off the main thread. The key is never included in the report.
      */
@@ -123,6 +189,14 @@ public final class GeminiClient {
             String body = in == null ? "" : read(in);
             sb.append("2. Reaching Google: OK, answered ").append(code).append(" (").append(System.currentTimeMillis() - t0).append(" ms)\n");
             sb.append("3. Your key: ").append(code == 200 ? "works." : describe(code, body));
+            if (code == 200) {
+                try {
+                    java.util.List<String> found = discover(apiKey);
+                    sb.append("\n4. Model the app will use: ").append(found.isEmpty() ? "none found (will try " + FALLBACKS[0] + ")" : found.get(0));
+                } catch (GeminiException ge) {
+                    sb.append("\n4. Model list: ").append(ge.getMessage());
+                }
+            }
         } catch (Exception e) {
             sb.append("2. Reaching Google: FAILED (").append(e.getClass().getSimpleName())
                     .append("). The phone found Google but couldn't connect. Check your internet or VPN.");
