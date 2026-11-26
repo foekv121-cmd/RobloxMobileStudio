@@ -2,7 +2,8 @@
 
 Select a Model in the Explorer, then File > Animator.
 
-- **Move it**: drag the title bar (the ☰ Animator line) to move the panel out of the way. It opens smaller now and remembers where you left it.
+- **Size and position**: drag the title bar to move the panel. The S/M/L button changes its size, the ▁ button shrinks it to just the title and menus so you can see the model, and it remembers where you left it.
+- **Welded models**: if every part is welded to one root, each part gets its own track automatically. Otherwise use Options > Animate welded parts separately.
 - **Tracks**: every Motor6D gets a joint track (its Transform is animated). Parts that no joint moves get a part track (absolute CFrame). Welds follow their Part0.
 - **Pose + Key**: pose with Move/Rotate, tap Key. Tap a track name first to key only that track. Long press a row to add a key at that frame.
 - **Timeline**: tap/drag the ruler to scrub, drag diamonds to retime, Multi for multi-select, pinch to zoom, drag empty space to pan.

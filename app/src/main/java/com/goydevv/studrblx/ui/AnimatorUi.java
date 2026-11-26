@@ -12,6 +12,7 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.widget.CheckBox;
 import android.widget.EditText;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.PopupMenu;
 import android.widget.ScrollView;
@@ -58,7 +59,7 @@ public final class AnimatorUi implements TimelineView.Host {
     private final Activity act;
     private final Studio studio;
     private final Instance root;
-    private final SunRig rig;
+    private SunRig rig;
     private SunAnim anim;
     private final ArrayDeque<SunAnim> undo = new ArrayDeque<>();
     private final ArrayDeque<SunAnim> redo = new ArrayDeque<>();
@@ -78,6 +79,11 @@ public final class AnimatorUi implements TimelineView.Host {
     private TextView playBtn;
     private TextView multiBtn;
     private TextView status;
+    private LinearLayout panel;
+    private TextView collapseBtn;
+    private TextView sizeBtn;
+    private boolean collapsed;
+    private static int sizeMode;
 
     private final Runnable tick = new Runnable() {
         @Override
@@ -141,6 +147,10 @@ public final class AnimatorUi implements TimelineView.Host {
                 current.close();
             }
             SunRig rig = new SunRig(target);
+            if (!rig.isEmpty() && rig.weldCount() > 0 && rig.partCount() > 1 && rig.newAnim().tracks.size() <= 1) {
+                // every part is welded to one root, so only one track would exist: let each part be animated on its own
+                rig = new SunRig(target, true);
+            }
             if (rig.isEmpty()) {
                 toast(act, "That selection has no parts to animate.");
                 return;
@@ -281,18 +291,31 @@ public final class AnimatorUi implements TimelineView.Host {
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
         bar.addView(title, new LinearLayout.LayoutParams(0, -2, 1.0f));
+        collapseBtn = btn("\u2581", this::toggleCollapse);
+        sizeBtn = btn(sizeLabel(), this::cycleSize);
+        TextView close = btn("\u2715", this::requestClose);
+        for (View v : new View[]{collapseBtn, sizeBtn, close}) {
+            LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(-2, -2);
+            ilp.setMargins(ui.dp(act, 2.0f), 0, ui.dp(act, 2.0f), 0);
+            bar.addView(v, ilp);
+        }
+        content.addView(bar);
+
+        LinearLayout menus = new LinearLayout(act);
+        menus.setOrientation(LinearLayout.HORIZONTAL);
         String[] names = {"File", "Edit", "Key", "Frame", "Options"};
         for (final String n : names) {
-            TextView b = btn(n, null);
-            final TextView bb = b;
-            b.setOnClickListener(v -> openMenu(n, bb));
+            final TextView b = btn(n, null);
+            b.setOnClickListener(v -> openMenu(n, b));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
             lp.setMargins(ui.dp(act, 2.0f), 0, ui.dp(act, 2.0f), 0);
-            bar.addView(b, lp);
+            menus.addView(b, lp);
         }
-        TextView close = btn("\u2715", this::requestClose);
-        bar.addView(close, new LinearLayout.LayoutParams(-2, -2));
-        content.addView(bar);
+        HorizontalScrollView menuScroll = new HorizontalScrollView(act);
+        menuScroll.setHorizontalScrollBarEnabled(false);
+        menuScroll.addView(menus);
+        content.addView(menuScroll);
+        panel = content;
 
         // transport
         playBtn = btn("\u25B6", this::togglePlay);
@@ -332,26 +355,104 @@ public final class AnimatorUi implements TimelineView.Host {
             // not modal: touches outside the panel still reach the viewport, so parts can be posed while it is open
             w.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL);
             w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-            DisplayMetrics dm = act.getResources().getDisplayMetrics();
-            boolean landscape = dm.widthPixels > dm.heightPixels;
-            int ww = Math.min(dm.widthPixels, landscape ? Math.max(ui.dp(act, 420.0f), dm.widthPixels * 58 / 100) : dm.widthPixels * 96 / 100);
-            int hh = Math.min(dm.heightPixels, landscape ? Math.max(ui.dp(act, 240.0f), dm.heightPixels * 50 / 100) : Math.max(ui.dp(act, 260.0f), dm.heightPixels * 40 / 100));
-            w.setLayout(ww, hh);
-            WindowManager.LayoutParams lp = w.getAttributes();
-            lp.gravity = Gravity.TOP | Gravity.LEFT;
-            lp.x = lastX == Integer.MIN_VALUE ? (dm.widthPixels - ww) / 2 : lastX;
-            lp.y = lastY == Integer.MIN_VALUE ? dm.heightPixels - hh - ui.dp(act, 8.0f) : lastY;
-            lp.x = Math.max(-(ww - ui.dp(act, 60.0f)), Math.min(dm.widthPixels - ui.dp(act, 60.0f), lp.x));
-            lp.y = Math.max(0, Math.min(dm.heightPixels - ui.dp(act, 40.0f), lp.y));
-            w.setAttributes(lp);
-            enableDrag(title);
+            WindowManager.LayoutParams glp = w.getAttributes();
+            glp.gravity = Gravity.TOP | Gravity.LEFT;
+            w.setAttributes(glp);
         }
         dialog.show();
+        layoutWindow(true);
+        enableDrag(title);
         tl.post(() -> tl.fit());
         updateLabel();
-        say(rig.hasJoints()
+        say(rig.separateWelds()
+                ? "These parts are welded together, so each part has its own track. Options > Animate welded parts separately turns this off."
+                : rig.hasJoints()
                 ? "Rig found: each Motor6D has a track. Pose a limb, then tap Key."
                 : "No Motor6D joints found: each free part gets a track.");
+    }
+
+    private static final String[] SIZE_NAMES = {"S", "M", "L"};
+
+    private String sizeLabel() {
+        return SIZE_NAMES[sizeMode];
+    }
+
+    /** Sets the panel size from the S / M / L choice (or just the title bar when collapsed), keeping it on screen. */
+    private void layoutWindow(boolean initial) {
+        Window w = dialog == null ? null : dialog.getWindow();
+        if (w == null) {
+            return;
+        }
+        Ui ui = Ui.INSTANCE;
+        DisplayMetrics dm = act.getResources().getDisplayMetrics();
+        boolean landscape = dm.widthPixels > dm.heightPixels;
+        int[] wl = landscape ? new int[]{40, 56, 78} : new int[]{94, 96, 98};
+        int[] hl = landscape ? new int[]{50, 62, 78} : new int[]{34, 46, 62};
+        int ww = Math.min(dm.widthPixels, Math.max(ui.dp(act, 300.0f), dm.widthPixels * wl[sizeMode] / 100));
+        int hh = Math.min(dm.heightPixels, Math.max(ui.dp(act, 220.0f), dm.heightPixels * hl[sizeMode] / 100));
+        WindowManager.LayoutParams lp = w.getAttributes();
+        lp.gravity = Gravity.TOP | Gravity.LEFT;
+        lp.width = ww;
+        lp.height = collapsed ? WindowManager.LayoutParams.WRAP_CONTENT : hh;
+        if (initial) {
+            lp.x = lastX == Integer.MIN_VALUE ? dm.widthPixels - ww - ui.dp(act, 8.0f) : lastX;
+            lp.y = lastY == Integer.MIN_VALUE ? dm.heightPixels - hh - ui.dp(act, 8.0f) : lastY;
+        }
+        lp.x = Math.max(-(ww - ui.dp(act, 60.0f)), Math.min(dm.widthPixels - ui.dp(act, 60.0f), lp.x));
+        lp.y = Math.max(0, Math.min(dm.heightPixels - ui.dp(act, 40.0f), lp.y));
+        w.setAttributes(lp);
+    }
+
+    private void toggleCollapse() {
+        collapsed = !collapsed;
+        for (int i = 2; i < panel.getChildCount(); i++) {
+            panel.getChildAt(i).setVisibility(collapsed ? View.GONE : View.VISIBLE);
+        }
+        collapseBtn.setText(collapsed ? "\u25A3" : "\u2581");
+        layoutWindow(false);
+    }
+
+    private void cycleSize() {
+        sizeMode = (sizeMode + 1) % SIZE_NAMES.length;
+        sizeBtn.setText(sizeLabel());
+        if (collapsed) {
+            toggleCollapse();
+        } else {
+            layoutWindow(false);
+        }
+    }
+
+    /** Switches between "welded parts follow their root" and "every part has its own track". */
+    private void toggleWelds() {
+        final boolean target = !rig.separateWelds();
+        Runnable doIt = () -> {
+            stopPlay();
+            pushUndo();
+            rig.restore();
+            SunRig next = new SunRig(root, target);
+            anim = next.fit(anim);
+            rig = next;
+            rebind();
+            rig.apply(anim, cur);
+            studio.markDirty();
+            updateLabel();
+            say(target ? "Each welded part now has its own track." : "Welded parts follow their root part again.");
+        };
+        boolean hasKeys = false;
+        for (SunAnim.Track t : anim.tracks) {
+            if (!t.keys.isEmpty()) {
+                hasKeys = true;
+            }
+        }
+        if (!hasKeys) {
+            doIt.run();
+            return;
+        }
+        Dialogs.INSTANCE.themed(act).setTitle("Change how welded parts are listed?")
+                .setMessage("This rebuilds the track list. Keys on tracks that no longer exist are removed (you can Undo).")
+                .setPositiveButton("Change", (d, w) -> doIt.run())
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     /** Lets the user drag the whole panel by its title, so it can be moved out of the way of the viewport. */
@@ -405,7 +506,8 @@ public final class AnimatorUi implements TimelineView.Host {
                 break;
             default:
                 menu(anchor, 40, chk(tl.easeColors, "Easing colors"), 41, chk(tl.showSeconds, "Show seconds"),
-                        42, chk(useLastEase, "Use last ease"));
+                        42, chk(useLastEase, "Use last ease"),
+                        43, chk(rig.separateWelds(), "Animate welded parts separately"));
                 break;
         }
     }
@@ -443,6 +545,7 @@ public final class AnimatorUi implements TimelineView.Host {
             case 40: tl.easeColors = !tl.easeColors; tl.invalidate(); break;
             case 41: tl.showSeconds = !tl.showSeconds; tl.invalidate(); updateLabel(); break;
             case 42: useLastEase = !useLastEase; break;
+            case 43: toggleWelds(); break;
             default: break;
         }
     }

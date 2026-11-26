@@ -45,9 +45,20 @@ public final class SunRig {
     private final Map<String, Joint> jointByPath = new HashMap<>();
     private final Map<Instance, String> pathOfPart = new HashMap<>();
     public int skipped;
+    private final boolean separateWelds;
+    private int weldCount;
 
     public SunRig(Instance root) {
+        this(root, false);
+    }
+
+    /**
+     * @param separateWelds when true, Weld / WeldConstraint / Snap joints don't make a part follow another part,
+     *                      so every welded part gets its own track and can be animated on its own.
+     */
+    public SunRig(Instance root, boolean separateWelds) {
         this.root = root;
+        this.separateWelds = separateWelds;
         List<Instance> all = new ArrayList<>();
         if (root.isA("BasePart")) {
             all.add(root);
@@ -73,6 +84,12 @@ public final class SunRig {
                 type = WELD_CONSTRAINT;
             } else {
                 continue;
+            }
+            if (type != MOTOR) {
+                weldCount++;
+                if (separateWelds) {
+                    continue;
+                }
             }
             Object a = i.get("Part0");
             Object b = i.get("Part1");
@@ -162,6 +179,15 @@ public final class SunRig {
 
     public boolean isEmpty() {
         return parts.isEmpty();
+    }
+
+    public boolean separateWelds() {
+        return separateWelds;
+    }
+
+    /** How many weld joints (Weld, WeldConstraint, Snap) the model has, counted even when they are ignored. */
+    public int weldCount() {
+        return weldCount;
     }
 
     public boolean hasJoints() {
