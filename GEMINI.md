@@ -12,3 +12,5 @@ Privacy and safety
 - Nothing is sent until you tap Send. A notice appears the first time. On Google's free tier, Google may use what you send to improve its products, so don't send secrets.
 - Replies are never run automatically. Read inserted code before you press Play.
 - Free-tier rate limits apply; the app tells you when you hit one.
+
+If it doesn't answer: after 45 seconds the app stops waiting and says so. Tap Stop to cancel earlier. In the gear menu, Test connection shows step by step whether the phone can find Google, reach it, and whether the key works.

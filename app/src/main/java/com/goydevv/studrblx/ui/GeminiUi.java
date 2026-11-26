@@ -50,7 +50,12 @@ public final class GeminiUi {
     private static final int MAX_CONTEXT = 12000;
     private static final int MAX_TURNS = 16;
     private static final Pattern CODE = Pattern.compile("```(?:lua|luau)?[ \\t]*\\r?\\n(.*?)```", Pattern.DOTALL);
-    private static final ExecutorService NET = Executors.newSingleThreadExecutor();
+    // cached daemon threads: a request stuck on a bad network can't block the next request or the connection test
+    private static final ExecutorService NET = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "gemini-net");
+        t.setDaemon(true);
+        return t;
+    });
     private static final JSONArray HISTORY = new JSONArray();
     private static int lastX = Integer.MIN_VALUE;
     private static int lastY = Integer.MIN_VALUE;
@@ -67,6 +72,9 @@ public final class GeminiUi {
     private TextView attachBtn;
     private boolean attach;
     private boolean pending;
+    private int reqId;
+    private TextView waitingView;
+    private static final int TIMEOUT_MS = 45000;
     private boolean closed;
     private String lastReply = "";
 
@@ -288,6 +296,7 @@ public final class GeminiUi {
 
     private void send() {
         if (pending) {
+            cancelRequest();
             return;
         }
         final String typed = input.getText().toString().trim();
@@ -331,9 +340,9 @@ public final class GeminiUi {
         }
         input.setText("");
         addMessage(shown, true);
-        final TextView waiting = addMessage("Thinking\u2026", false);
+        waitingView = addMessage("Asking Gemini\u2026 (up to " + (TIMEOUT_MS / 1000) + " seconds)", false);
         pending = true;
-        sendBtn.setText("\u2026");
+        sendBtn.setText("Stop");
         try {
             HISTORY.put(turn("user", sent));
         } catch (Throwable ignored) {
@@ -341,6 +350,14 @@ public final class GeminiUi {
         final JSONArray snapshot = copyHistory();
         final String apiKey = key();
         final String mdl = model();
+        final int id = ++reqId;
+        // watchdog: some networks (VPN, Private DNS, firewall) never answer, and DNS has no timeout of its own
+        main.postDelayed(() -> {
+            if (pending && reqId == id) {
+                finish("Gemini didn't answer in " + (TIMEOUT_MS / 1000) + " seconds, so I stopped waiting. "
+                        + "Check your internet, VPN or Private DNS. Tap \u2699 and then Test connection to see where it fails.", false);
+            }
+        }, (long) TIMEOUT_MS);
         NET.execute(() -> {
             String out = "Something went wrong.";
             boolean ok = false;
@@ -363,26 +380,49 @@ public final class GeminiUi {
             final String text = out;
             final boolean good = ok;
             main.post(() -> {
-                pending = false;
-                if (closed) {
-                    if (good) {
-                        remember(text);
-                    } else {
-                        dropLastUser();
-                    }
-                    return;
-                }
-                chat.removeView(waiting);
-                sendBtn.setText("Send");
-                addMessage(text, false);
-                if (good) {
-                    lastReply = text;
-                    remember(text);
-                } else {
-                    dropLastUser();
+                if (reqId == id && pending) {
+                    finish(text, good);
                 }
             });
         });
+    }
+
+    /** Ends the current request: shows the reply or error in the chat and re-enables Send. */
+    private void finish(String text, boolean good) {
+        pending = false;
+        reqId++;
+        if (good) {
+            remember(text);
+        } else {
+            dropLastUser();
+        }
+        if (closed) {
+            return;
+        }
+        if (waitingView != null) {
+            chat.removeView(waitingView);
+            waitingView = null;
+        }
+        sendBtn.setText("Send");
+        addMessage(text, false);
+        if (good) {
+            lastReply = text;
+        }
+    }
+
+    private void cancelRequest() {
+        if (!pending) {
+            return;
+        }
+        pending = false;
+        reqId++;
+        dropLastUser();
+        if (waitingView != null) {
+            chat.removeView(waitingView);
+            waitingView = null;
+        }
+        sendBtn.setText("Send");
+        addMessage("Stopped.", false);
     }
 
     private static JSONObject turn(String role, String text) throws Exception {
@@ -484,6 +524,32 @@ public final class GeminiUi {
         box.addView(ui.text(act, "Model (optional, leave empty). The app picks a working one for you.", 12.0f, ui.getDIM(), false));
         final EditText modelIn = ui.input(act, model(), "automatic", false, false);
         box.addView(modelIn);
+        final TextView result = ui.text(act, "", 12.0f, ui.getTEXT(), false);
+        final int[] testId = new int[1];
+        box.addView(btn("Test connection", () -> {
+            String typed = keyIn.getText().toString().trim();
+            final String k2 = typed.length() > 0 ? typed : key();
+            if (k2.length() == 0) {
+                result.setText("Paste your API key above first.");
+                return;
+            }
+            final int mine = ++testId[0];
+            result.setText("Testing\u2026");
+            main.postDelayed(() -> {
+                if (testId[0] == mine && "Testing\u2026".contentEquals(result.getText())) {
+                    result.setText("The test timed out after 25 seconds. The phone can't reach Google: check your internet, VPN or Private DNS.");
+                }
+            }, 25000L);
+            NET.execute(() -> {
+                final String report = GeminiClient.diagnose(k2);
+                main.post(() -> {
+                    if (testId[0] == mine) {
+                        result.setText(report);
+                    }
+                });
+            });
+        }));
+        box.addView(result);
         box.addView(ui.text(act, "The key is stored only on this phone and is sent only to Google's Gemini API. Free-tier limits apply.", 11.0f, ui.getDIM(), false));
         ScrollView sv = new ScrollView(act);
         sv.addView(box);

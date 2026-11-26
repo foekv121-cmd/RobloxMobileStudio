@@ -55,7 +55,7 @@ public final class GeminiClient {
             JSONObject body = new JSONObject();
             body.put("systemInstruction", new JSONObject().put("parts", new JSONArray().put(new JSONObject().put("text", system))));
             body.put("contents", contents);
-            body.put("generationConfig", new JSONObject().put("temperature", 0.4).put("maxOutputTokens", 2048));
+            body.put("generationConfig", new JSONObject().put("temperature", 0.4).put("maxOutputTokens", 8192));
             byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
 
             c = (HttpURLConnection) new URL(HOST + model + ":generateContent").openConnection();
@@ -89,6 +89,44 @@ public final class GeminiClient {
                 c.disconnect();
             }
         }
+    }
+
+    /**
+     * Checks the connection step by step and returns a readable report: DNS, reaching Google, and whether the key works.
+     * Blocks, so call it off the main thread. The key is never included in the report.
+     */
+    public static String diagnose(String apiKey) {
+        StringBuilder sb = new StringBuilder();
+        long t0 = System.currentTimeMillis();
+        try {
+            java.net.InetAddress.getByName("generativelanguage.googleapis.com");
+            sb.append("1. Finding Google: OK (").append(System.currentTimeMillis() - t0).append(" ms)\n");
+        } catch (Exception e) {
+            return sb.append("1. Finding Google: FAILED (").append(e.getClass().getSimpleName())
+                    .append("). The phone can't look up Google. Check your internet, VPN or Private DNS.").toString();
+        }
+        HttpURLConnection c = null;
+        try {
+            t0 = System.currentTimeMillis();
+            c = (HttpURLConnection) new URL("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1").openConnection();
+            c.setInstanceFollowRedirects(false);
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(15000);
+            c.setRequestProperty("x-goog-api-key", apiKey.trim());
+            int code = c.getResponseCode();
+            InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
+            String body = in == null ? "" : read(in);
+            sb.append("2. Reaching Google: OK, answered ").append(code).append(" (").append(System.currentTimeMillis() - t0).append(" ms)\n");
+            sb.append("3. Your key: ").append(code == 200 ? "works." : describe(code, body));
+        } catch (Exception e) {
+            sb.append("2. Reaching Google: FAILED (").append(e.getClass().getSimpleName())
+                    .append("). The phone found Google but couldn't connect. Check your internet or VPN.");
+        } finally {
+            if (c != null) {
+                c.disconnect();
+            }
+        }
+        return sb.toString();
     }
 
     private static String read(InputStream in) throws IOException {
