@@ -7,6 +7,7 @@ import android.os.Looper;
 import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.View;
+import android.view.MotionEvent;
 import android.view.Window;
 import android.view.WindowManager;
 import android.widget.CheckBox;
@@ -70,6 +71,8 @@ public final class AnimatorUi implements TimelineView.Host {
     private boolean useLastEase = true;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private AlertDialog dialog;
+    private static int lastX = Integer.MIN_VALUE;
+    private static int lastY = Integer.MIN_VALUE;
     private TimelineView tl;
     private TextView frameLabel;
     private TextView playBtn;
@@ -272,7 +275,8 @@ public final class AnimatorUi implements TimelineView.Host {
         content.setPadding(pad, pad, pad, pad);
 
         // menu bar
-        final TextView title = ui.text(act, "Animator \u2014 " + root.getName(), 13.0f, ui.getTEXT(), true);
+        final TextView title = ui.text(act, "\u2630 Animator \u2014 " + root.getName(), 13.0f, ui.getTEXT(), true);
+        title.setPadding(0, ui.dp(act, 8.0f), ui.dp(act, 8.0f), ui.dp(act, 8.0f));
         LinearLayout bar = new LinearLayout(act);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
@@ -328,9 +332,19 @@ public final class AnimatorUi implements TimelineView.Host {
             // not modal: touches outside the panel still reach the viewport, so parts can be posed while it is open
             w.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL);
             w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-            w.setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
             DisplayMetrics dm = act.getResources().getDisplayMetrics();
-            w.setLayout(dm.widthPixels, Math.max(ui.dp(act, 300.0f), dm.heightPixels * 62 / 100));
+            boolean landscape = dm.widthPixels > dm.heightPixels;
+            int ww = Math.min(dm.widthPixels, landscape ? Math.max(ui.dp(act, 420.0f), dm.widthPixels * 58 / 100) : dm.widthPixels * 96 / 100);
+            int hh = Math.min(dm.heightPixels, landscape ? Math.max(ui.dp(act, 240.0f), dm.heightPixels * 50 / 100) : Math.max(ui.dp(act, 260.0f), dm.heightPixels * 40 / 100));
+            w.setLayout(ww, hh);
+            WindowManager.LayoutParams lp = w.getAttributes();
+            lp.gravity = Gravity.TOP | Gravity.LEFT;
+            lp.x = lastX == Integer.MIN_VALUE ? (dm.widthPixels - ww) / 2 : lastX;
+            lp.y = lastY == Integer.MIN_VALUE ? dm.heightPixels - hh - ui.dp(act, 8.0f) : lastY;
+            lp.x = Math.max(-(ww - ui.dp(act, 60.0f)), Math.min(dm.widthPixels - ui.dp(act, 60.0f), lp.x));
+            lp.y = Math.max(0, Math.min(dm.heightPixels - ui.dp(act, 40.0f), lp.y));
+            w.setAttributes(lp);
+            enableDrag(title);
         }
         dialog.show();
         tl.post(() -> tl.fit());
@@ -338,6 +352,37 @@ public final class AnimatorUi implements TimelineView.Host {
         say(rig.hasJoints()
                 ? "Rig found: each Motor6D has a track. Pose a limb, then tap Key."
                 : "No Motor6D joints found: each free part gets a track.");
+    }
+
+    /** Lets the user drag the whole panel by its title, so it can be moved out of the way of the viewport. */
+    private void enableDrag(View handle) {
+        final int[] st = new int[4];
+        handle.setOnTouchListener((v, ev) -> {
+            Window win = dialog == null ? null : dialog.getWindow();
+            if (win == null) {
+                return false;
+            }
+            WindowManager.LayoutParams lp = win.getAttributes();
+            DisplayMetrics dm = act.getResources().getDisplayMetrics();
+            int keep = Ui.INSTANCE.dp(act, 60.0f);
+            switch (ev.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    st[0] = (int) ev.getRawX();
+                    st[1] = (int) ev.getRawY();
+                    st[2] = lp.x;
+                    st[3] = lp.y;
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    lp.x = Math.max(-(lp.width - keep), Math.min(dm.widthPixels - keep, st[2] + (int) ev.getRawX() - st[0]));
+                    lp.y = Math.max(0, Math.min(dm.heightPixels - keep, st[3] + (int) ev.getRawY() - st[1]));
+                    win.setAttributes(lp);
+                    lastX = lp.x;
+                    lastY = lp.y;
+                    return true;
+                default:
+                    return true;
+            }
+        });
     }
 
     private void openMenu(String which, View anchor) {
