@@ -99,8 +99,9 @@ public final class GeminiUi {
     }
 
     private String model() {
-        String m = prefs().getString("model", GeminiClient.DEFAULT_MODEL);
-        return GeminiClient.validModel(m) ? m : GeminiClient.DEFAULT_MODEL;
+        // empty means automatic: the app picks a working Gemini model itself
+        String m = prefs().getString("model", "");
+        return GeminiClient.validModel(m) && !GeminiClient.DEFAULT_MODEL.equals(m) ? m : "";
     }
 
     // ------------------------------------------------------------------ UI
@@ -341,16 +342,23 @@ public final class GeminiUi {
         final String apiKey = key();
         final String mdl = model();
         NET.execute(() -> {
-            String out;
-            boolean ok = true;
-            try {
-                out = GeminiClient.generate(apiKey, mdl, SYSTEM, snapshot);
-            } catch (GeminiClient.GeminiException e) {
-                out = e.getMessage();
-                ok = false;
-            } catch (Throwable t) {
-                out = "Something went wrong.";
-                ok = false;
+            String out = "Something went wrong.";
+            boolean ok = false;
+            String[] tries = mdl.length() > 0 ? new String[]{mdl} : GeminiClient.FALLBACKS;
+            for (String m : tries) {
+                try {
+                    out = GeminiClient.generate(apiKey, m, SYSTEM, snapshot);
+                    ok = true;
+                    break;
+                } catch (GeminiClient.GeminiException e) {
+                    out = e.getMessage();
+                    if (e.code != 404) {
+                        break;
+                    }
+                } catch (Throwable t) {
+                    out = "Something went wrong.";
+                    break;
+                }
             }
             final String text = out;
             final boolean good = ok;
@@ -473,8 +481,8 @@ public final class GeminiUi {
         final EditText keyIn = ui.input(act, "", "API key", false, false);
         keyIn.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         box.addView(keyIn);
-        box.addView(ui.text(act, "Model", 12.0f, ui.getDIM(), false));
-        final EditText modelIn = ui.input(act, model(), GeminiClient.DEFAULT_MODEL, false, false);
+        box.addView(ui.text(act, "Model (optional, leave empty). The app picks a working one for you.", 12.0f, ui.getDIM(), false));
+        final EditText modelIn = ui.input(act, model(), "automatic", false, false);
         box.addView(modelIn);
         box.addView(ui.text(act, "The key is stored only on this phone and is sent only to Google's Gemini API. Free-tier limits apply.", 11.0f, ui.getDIM(), false));
         ScrollView sv = new ScrollView(act);
@@ -491,7 +499,11 @@ public final class GeminiUi {
                         e.putString("key", nk);
                     }
                     String nm = modelIn.getText().toString().trim();
-                    e.putString("model", GeminiClient.validModel(nm) ? nm : GeminiClient.DEFAULT_MODEL);
+                    if (nm.length() == 0 || !GeminiClient.validModel(nm)) {
+                        e.remove("model");
+                    } else {
+                        e.putString("model", nm);
+                    }
                     e.apply();
                     Toast.makeText(act, "Saved.", Toast.LENGTH_SHORT).show();
                 })

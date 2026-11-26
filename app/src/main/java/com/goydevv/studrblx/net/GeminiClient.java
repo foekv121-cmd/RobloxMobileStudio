@@ -19,6 +19,8 @@ import org.json.JSONObject;
  */
 public final class GeminiClient {
     public static final String DEFAULT_MODEL = "gemini-2.5-flash";
+    /** Tried in order when no model is chosen: if Google retires one, the next is used automatically. */
+    public static final String[] FALLBACKS = {DEFAULT_MODEL, "gemini-flash-latest", "gemini-2.0-flash"};
     private static final String HOST = "https://generativelanguage.googleapis.com/v1beta/models/";
     private static final Pattern MODEL_OK = Pattern.compile("[A-Za-z0-9._-]{1,60}");
     private static final int MAX_BYTES = 2 * 1024 * 1024;
@@ -119,7 +121,7 @@ public final class GeminiClient {
         }
         if (code == 400 || code == 404) {
             return code == 404
-                    ? "That model wasn't found. Change the model name in settings."
+                    ? "Gemini couldn't find that model. In settings, clear the model box so the app picks one itself."
                     : "Gemini rejected the request" + (api.length() > 0 ? ": " + clip(api) : ".");
         }
         if (code == 401 || code == 403) {
