@@ -2661,7 +2661,47 @@ public final class PlaySession implements TreeListener {
         st.setTrack(t);
     }
 
+    // ---- animation level of detail: rigs far from the player are re-posed less often (their time still advances) ----
+    private final IdentityHashMap<Instance, Integer> animLod = new IdentityHashMap<>();
+    private Vector3 lodOrigin;
+    private int lodStamp = -1;
+    private int lodFrame;
+
+    private final boolean poseDue(Instance rig) {
+        Pair<Instance, List<RigJoint>> built = this.rigJoints.get(rig);
+        if (built == null) {
+            return true;
+        }
+        if (this.lodStamp != this.lodFrame) {
+            this.lodStamp = this.lodFrame;
+            this.lodOrigin = null;
+            Instance me = this.character;
+            Instance hrp = me == null ? null : me.findFirstChild("HumanoidRootPart", false);
+            if (hrp != null) {
+                this.lodOrigin = PartData.INSTANCE.cframe(hrp).getPosition();
+            }
+        }
+        Vector3 o = this.lodOrigin;
+        if (o == null) {
+            return true;
+        }
+        Vector3 rp = PartData.INSTANCE.cframe(built.getFirst()).getPosition();
+        float dx = rp.getX() - o.getX();
+        float dy = rp.getY() - o.getY();
+        float dz = rp.getZ() - o.getZ();
+        float d2 = dx * dx + dy * dy + dz * dz;
+        int every = d2 < 4900.0f ? 1 : d2 < 22500.0f ? 2 : d2 < 90000.0f ? 4 : 8;
+        if (every == 1) {
+            return true;
+        }
+        Integer last = this.animLod.get(rig);
+        int n = last == null ? 0 : last.intValue() + 1;
+        this.animLod.put(rig, Integer.valueOf(n));
+        return n % every == 0;
+    }
+
     private final void stepScriptTracks(float dt) {
+        this.lodFrame++;
         try {
         if (this.scriptTracks.isEmpty() && this.rigPlayers.isEmpty()) {
             return;
@@ -2714,7 +2754,9 @@ public final class PlaySession implements TreeListener {
                 if (rig != this.character && !p.getTracks().isEmpty()) {
                     Intrinsics.checkNotNull(rig);
                     Intrinsics.checkNotNull(p);
-                    poseRig(rig, p);
+                    if (poseDue(rig)) {
+                        poseRig(rig, p);
+                    }
                 }
                 if (p.getTracks().isEmpty() && rig != this.character) {
                     it2.remove();

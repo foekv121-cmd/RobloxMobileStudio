@@ -155,7 +155,8 @@ public final class Collide {
         if (Boolean.FALSE.equals(i.get("CanCollide"))) {
             return true;
         }
-        return Boolean.FALSE.equals(i.getAttributes().get("CanCollide"));
+        java.util.Map<String, Object> at = i.getAttributes();
+        return !at.isEmpty() && Boolean.FALSE.equals(at.get("CanCollide"));
     }
 
     /** CanCollide of the part itself plus "collision off" set on any Model or Folder above it. */

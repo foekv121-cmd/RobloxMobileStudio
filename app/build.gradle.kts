@@ -34,6 +34,12 @@ android {
         jvmTarget = "17"
     }
 
+    lint {
+        // release builds must not stop on lint warnings from the decompiled sources
+        checkReleaseBuilds = false
+        abortOnError = false
+    }
+
     packaging {
         jniLibs {
             useLegacyPackaging = false
