@@ -28,7 +28,16 @@ public final class DefaultAnimate {
     private final Map<String, List<Entry>> sets;
     private AnimPlayer.Track toolTrack;
 
+    private Map<String, List<CustomAnims.Clip>> custom = new java.util.HashMap<>();
+
     public DefaultAnimate(boolean r15) {
+        this(r15, null);
+    }
+
+    public DefaultAnimate(boolean r15, Map<String, List<CustomAnims.Clip>> customPack) {
+        if (customPack != null) {
+            this.custom = customPack;
+        }
         this.r15 = r15;
         this.sets = this.r15 ? MapsKt.mapOf(TuplesKt.to("idle", CollectionsKt.listOf(new Entry[]{new Entry(507766666L, 9), new Entry(507766951L, 1)})), TuplesKt.to("walk", CollectionsKt.listOf(new Entry(913402848L, 10))), TuplesKt.to("run", CollectionsKt.listOf(new Entry(913376220L, 10))), TuplesKt.to("jump", CollectionsKt.listOf(new Entry(507765000L, 10))), TuplesKt.to("fall", CollectionsKt.listOf(new Entry(507767968L, 10))), TuplesKt.to("climb", CollectionsKt.listOf(new Entry(507765644L, 10))), TuplesKt.to("sit", CollectionsKt.listOf(new Entry(2506281703L, 10))), TuplesKt.to("toolnone", CollectionsKt.listOf(new Entry(507768375L, 10))), TuplesKt.to("wave", CollectionsKt.listOf(new Entry(507770239L, 10))), TuplesKt.to("point", CollectionsKt.listOf(new Entry(507770453L, 10))), TuplesKt.to("dance", CollectionsKt.listOf(new Entry[]{new Entry(507771019L, 10), new Entry(507771955L, 10), new Entry(507772104L, 10)})), TuplesKt.to("dance2", CollectionsKt.listOf(new Entry[]{new Entry(507776043L, 10), new Entry(507776720L, 10), new Entry(507776879L, 10)})), TuplesKt.to("dance3", CollectionsKt.listOf(new Entry[]{new Entry(507777268L, 10), new Entry(507777451L, 10), new Entry(507777623L, 10)})), TuplesKt.to("laugh", CollectionsKt.listOf(new Entry(507770818L, 10))), TuplesKt.to("cheer", CollectionsKt.listOf(new Entry(507770677L, 10)))) : MapsKt.mapOf(TuplesKt.to("idle", CollectionsKt.listOf(new Entry[]{new Entry(180435571L, 9), new Entry(180435792L, 1)})), TuplesKt.to("walk", CollectionsKt.listOf(new Entry(180426354L, 10))), TuplesKt.to("run", CollectionsKt.listOf(new Entry(180426354L, 10))), TuplesKt.to("jump", CollectionsKt.listOf(new Entry(125750702L, 10))), TuplesKt.to("fall", CollectionsKt.listOf(new Entry(180436148L, 10))), TuplesKt.to("climb", CollectionsKt.listOf(new Entry(180436334L, 10))), TuplesKt.to("sit", CollectionsKt.listOf(new Entry(178130996L, 10))), TuplesKt.to("toolnone", CollectionsKt.listOf(new Entry(182393478L, 10))), TuplesKt.to("wave", CollectionsKt.listOf(new Entry(128777973L, 10))), TuplesKt.to("point", CollectionsKt.listOf(new Entry(128853357L, 10))), TuplesKt.to("dance", CollectionsKt.listOf(new Entry[]{new Entry(182435998L, 10), new Entry(182491037L, 10), new Entry(182491065L, 10)})), TuplesKt.to("dance2", CollectionsKt.listOf(new Entry[]{new Entry(182436842L, 10), new Entry(182491248L, 10), new Entry(182491277L, 10)})), TuplesKt.to("dance3", CollectionsKt.listOf(new Entry[]{new Entry(182436935L, 10), new Entry(182491368L, 10), new Entry(182491423L, 10)})), TuplesKt.to("laugh", CollectionsKt.listOf(new Entry(129423131L, 10))), TuplesKt.to("cheer", CollectionsKt.listOf(new Entry(129423030L, 10))));
         this.rnd = new Random();
@@ -36,6 +45,9 @@ public final class DefaultAnimate {
         this.currentTracks = new ArrayList<>();
         // Warm core locomotion clips first (jump/fall/walk/idle) before emotes
         for (String priorityKey : new String[]{"jump", "fall", "walk", "idle", "climb", "sit"}) {
+            if (this.custom.containsKey(priorityKey)) {
+                continue;
+            }
             List<Entry> list = this.sets.get(priorityKey);
             if (list != null) {
                 for (Entry e : list) {
@@ -43,9 +55,11 @@ public final class DefaultAnimate {
                 }
             }
         }
-        Iterator<List<Entry>> it = this.sets.values().iterator();
-        while (it.hasNext()) {
-            for (Entry e : it.next()) {
+        for (Map.Entry<String, List<Entry>> setEntry : this.sets.entrySet()) {
+            if (this.custom.containsKey(setEntry.getKey())) {
+                continue;
+            }
+            for (Entry e : setEntry.getValue()) {
                 AnimLibrary.INSTANCE.get(e.getId());
             }
         }
@@ -74,7 +88,42 @@ public final class DefaultAnimate {
         }
     }
 
+    /** True when the place has its own animation for this state (a PlayerAnimations pack). */
+    public final boolean hasCustom(String state) {
+        List<CustomAnims.Clip> l = this.custom.get(state);
+        return l != null && !l.isEmpty();
+    }
+
+    private final AnimClip pickCustom(String name) {
+        List<CustomAnims.Clip> l = this.custom.get(name);
+        if (l == null || l.isEmpty()) {
+            return null;
+        }
+        int total = 0;
+        for (CustomAnims.Clip c : l) {
+            total += c.weight;
+        }
+        int r = this.rnd.nextInt(RangesKt.coerceAtLeast(total, 1));
+        for (CustomAnims.Clip c : l) {
+            r -= c.weight;
+            if (r < 0) {
+                return c.get();
+            }
+        }
+        return l.get(0).get();
+    }
+
     public final boolean getReady() {
+        for (String key : new String[]{"idle", "walk"}) {
+            List<CustomAnims.Clip> cl = this.custom.get(key);
+            if (cl != null) {
+                for (CustomAnims.Clip c : cl) {
+                    if (c.get() != null) {
+                        return true;
+                    }
+                }
+            }
+        }
         for (String key : new String[]{"idle", "walk"}) {
             List<Entry> list = this.sets.get(key);
             if (list != null) {
@@ -89,6 +138,12 @@ public final class DefaultAnimate {
     }
 
     private final AnimClip pick(String name) {
+        if (this.custom.containsKey(name)) {
+            AnimClip mine = pickCustom(name);
+            if (mine != null) {
+                return mine;
+            }
+        }
         List<Entry> list = this.sets.get(name);
         if (list == null) {
             return null;

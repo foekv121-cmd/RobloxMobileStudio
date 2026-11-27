@@ -490,7 +490,8 @@ public final class AnimatorUi implements TimelineView.Host {
         switch (which) {
             case "File":
                 menu(anchor, 1, "Save to model", 2, "Load from model\u2026", 3, "Export KeyframeSequence",
-                        4, "Import KeyframeSequence", 5, "Animation settings\u2026", 6, "Close");
+                        4, "Import KeyframeSequence", 7, "Use as player animation\u2026", 8, "Export player animations (.rbxm)",
+                        5, "Animation settings\u2026", 6, "Close");
                 break;
             case "Edit":
                 menu(anchor, 10, "Undo", 11, "Redo", 12, "Copy", 13, "Paste at playhead", 14, "Delete",
@@ -520,6 +521,8 @@ public final class AnimatorUi implements TimelineView.Host {
             case 4: importSequence(); break;
             case 5: settingsDialog(); break;
             case 6: requestClose(); break;
+            case 7: playerAnimDialog(); break;
+            case 8: exportPlayerPack(); break;
             case 10: doUndo(); break;
             case 11: doRedo(); break;
             case 12: copyKeys(); break;
@@ -1433,6 +1436,81 @@ public final class AnimatorUi implements TimelineView.Host {
                     + (parts > 0 ? " " + parts + " part track(s) were left out." : ""));
         } catch (Throwable t) {
             say("Couldn't export: " + t);
+        }
+    }
+
+    /** The PlayerAnimations folder (StarterPlayer > StarterCharacterScripts). */
+    private Instance playerPack(boolean create) {
+        com.goydevv.studrblx.model.DataModel dm = studio.getEditModel();
+        Instance pack = com.goydevv.studrblx.engine.CustomAnims.findPack(dm);
+        if (pack != null || !create) {
+            return pack;
+        }
+        Instance sp = dm.getService("StarterPlayer");
+        Instance scs = sp.findFirstChild("StarterCharacterScripts", false);
+        if (scs == null) {
+            scs = InstanceFactory.INSTANCE.create("StarterCharacterScripts");
+            scs.setName("StarterCharacterScripts");
+            scs.setParent(sp, -1);
+        }
+        pack = InstanceFactory.INSTANCE.create("Folder");
+        pack.setName(com.goydevv.studrblx.engine.CustomAnims.PACK);
+        pack.setParent(scs, -1);
+        return pack;
+    }
+
+    /** Makes this animation the player's idle / walk / run / jump / fall / climb / sit animation in playtests. */
+    private void playerAnimDialog() {
+        stopPlay();
+        anim.normalize();
+        int joints = 0;
+        for (SunAnim.Track t : anim.tracks) {
+            if (t.kind == SunAnim.JOINT && !t.keys.isEmpty()) {
+                joints++;
+            }
+        }
+        if (joints == 0) {
+            say("Key some Motor6D joints first. Player animations move the character's joints.");
+            return;
+        }
+        final String[] states = com.goydevv.studrblx.engine.CustomAnims.STATES;
+        Dialogs.INSTANCE.themed(act).setTitle("Use \"" + anim.name + "\" as the player's...")
+                .setItems(states, (d, which) -> {
+                    try {
+                        String state = states[which];
+                        Instance pack = playerPack(true);
+                        for (Instance c : new ArrayList<>(pack.getChildren())) {
+                            if ("KeyframeSequence".equals(c.getClassName()) && c.getName().equalsIgnoreCase(state)) {
+                                c.destroy();
+                            }
+                        }
+                        Instance seq = anim.toKeyframeSequence();
+                        seq.setName(state);
+                        boolean loops = !state.equals("jump") && !state.equals("fall");
+                        seq.set("Loop", loops, false);
+                        seq.setParent(pack, -1);
+                        studio.markDirty();
+                        say("Done: \"" + state + "\" is now in " + pack.getName() + ". Playtest to see it. Use the same menu for the other states.");
+                    } catch (Throwable t) {
+                        say("Couldn't set it: " + t);
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    /** Saves the PlayerAnimations folder as an .rbxm file (the normal Export Selection flow). */
+    private void exportPlayerPack() {
+        Instance pack = playerPack(false);
+        if (pack == null || pack.getChildren().isEmpty()) {
+            say("No player animations yet. Use File > Use as player animation first.");
+            return;
+        }
+        studio.select(java.util.Collections.singletonList(pack));
+        if (act instanceof MainActions) {
+            ((MainActions) act).exportSelection();
+        } else {
+            say("Selected " + pack.getName() + ". Use File > Export Selection (.rbxm) in the main menu.");
         }
     }
 

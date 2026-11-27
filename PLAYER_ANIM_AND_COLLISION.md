@@ -1,0 +1,23 @@
+# Player animations, collision groups and noclip
+
+## Custom player animations
+1. Animator: pose a rig, key it, then **File > Use as player animation...** and pick idle / walk / run / jump / fall / climb / sit.
+   This puts a KeyframeSequence in `StarterPlayer > StarterCharacterScripts > PlayerAnimations`.
+2. Playtest: the player now uses your animation for that state. States you didn't set keep the Roblox default.
+3. **File > Export player animations (.rbxm)** saves the PlayerAnimations folder as a file. Drop that .rbxm into any place
+   (or import it) and the same animations are used there.
+
+Pack rules (you can also build it by hand): a Folder or Model named `PlayerAnimations` anywhere in the place with
+- KeyframeSequences named idle, walk, run, jump, fall, climb, sit (idle2, walk_2 ... are extra variants), or
+- Animation objects with those names (AnimationId, or a KeyframeSequence inside), or
+- a Folder per state holding KeyframeSequences/Animations (a NumberValue "Weight" inside one makes it likelier).
+Sub-folders named `R6` / `R15` are picked by the character's rig type. A Roblox style `Animate` folder inside StarterPlayer works too.
+
+## Collision (quick menu > Collision...)
+- **Collision OFF / ON** for the selected model or parts: every part inside changes, and the model remembers it.
+- **Player walks through everything (noclip)** and **Player's group**.
+- **Collision groups**: make groups, tick which groups collide, put the selection in a group.
+  Everything is saved in the place (ServerStorage > __CollisionConfig).
+- Scripts: `character:SetAttribute("Noclip", true)`, `model:SetAttribute("CanCollide", false)`, and the real
+  `PhysicsService` API (RegisterCollisionGroup, CollisionGroupSetCollidable, SetPartCollisionGroup, ...) now work.
+- Not covered: RaycastParams.CollisionGroup (rays still only respect CanCollide).

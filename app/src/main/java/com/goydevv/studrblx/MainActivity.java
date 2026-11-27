@@ -5929,9 +5929,16 @@ public final class MainActivity extends AppCompatActivity implements MainActions
                 return Unit.INSTANCE;
             }
         }));
+        quickItems.add(12, TuplesKt.to("Collision\u2026 (model, player, groups)", new Function0() {
+            @Override
+            public final Object invoke() {
+                com.goydevv.studrblx.ui.CollisionUi.show(MainActivity.this, MainActivity.this.studio);
+                return Unit.INSTANCE;
+            }
+        }));
         try {
             com.goydevv.studrblx.plugins.NativePlugins.init(this, this.studio);
-            int pluginPos = 12;
+            int pluginPos = 13;
             for (final com.goydevv.studrblx.plugins.NativePlugins.Button pluginBtn : com.goydevv.studrblx.plugins.NativePlugins.buttons()) {
                 String pluginLabel = "\u25B8 " + (pluginBtn.icon.length() > 0 ? pluginBtn.icon + " " : "") + pluginBtn.text + "  (" + com.goydevv.studrblx.plugins.NativePlugins.pluginName(pluginBtn.pluginId) + ")";
                 quickItems.add(pluginPos++, TuplesKt.to(pluginLabel, new Function0() {

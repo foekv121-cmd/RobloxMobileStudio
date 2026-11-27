@@ -185,6 +185,7 @@ public final class PlaySession implements TreeListener {
         Intrinsics.checkNotNullParameter(dm, "dm");
         this.studio = studio;
         this.dm = dm;
+        Collide.loadFrom(dm);
         LuaRuntime luaRuntime = new LuaRuntime(this.studio, this.dm, true);
         luaRuntime.setPlay(this);
         this.rt = luaRuntime;
@@ -1522,7 +1523,7 @@ public final class PlaySession implements TreeListener {
         } else {
             z2 = false;
         }
-        this.animator = z2 ? new DefaultAnimate(this.isR15) : null;
+        this.animator = z2 ? new DefaultAnimate(this.isR15, CustomAnims.find(this.dm, this.isR15)) : null;
         this.vel = Vector3.INSTANCE.getZERO();
         this.dead = false;
         this.emote = null;
@@ -3412,7 +3413,7 @@ public final class PlaySession implements TreeListener {
                     Vector3 push2 = push;
                     for (Object _sObj : query$default(this, a0, a1, false, 4, null)) {
                         Instance s = (Instance) _sObj;
-                        if (!Intrinsics.areEqual(s.get("CanCollide"), Boolean.valueOf(z)) && !isCharacterPart(s) && (pairContact = Geometry.INSTANCE.contact(shape, a0, a1, s)) != null && (m = pairContact.getFirst()) != null && m.getMagnitude() > push2.getMagnitude()) {
+                        if (Collide.partsHit(p, s) && !isCharacterPart(s) && (pairContact = Geometry.INSTANCE.contact(shape, a0, a1, s)) != null && (m = pairContact.getFirst()) != null && m.getMagnitude() > push2.getMagnitude()) {
                             push2 = m;
                         }
                     }
@@ -3452,7 +3453,7 @@ public final class PlaySession implements TreeListener {
             Instance instance = (Instance) obj;
             boolean z = false;
             Iterable iterable = iterableQuery$default;
-            if (!Intrinsics.areEqual(instance.get("CanCollide"), (Object) false) && !isCharacterPart(instance)) {
+            if (playerSolid(instance)) {
                 z = true;
             }
             if (z) {
@@ -4136,7 +4137,7 @@ public final class PlaySession implements TreeListener {
             Vector3 probeHi = new Vector3(this.pos.getX() + this.charHalfXZ, rayStartY + 0.1f, this.pos.getZ() + this.charHalfXZ);
             List<Instance> floorCands = new ArrayList<>();
             for (Instance fc : query(probeLo, probeHi, true)) {
-                if (!isCharacterPart(fc) && !Intrinsics.areEqual(fc.get("CanCollide"), Boolean.FALSE)) {
+                if (playerSolid(fc)) {
                     floorCands.add(fc);
                 }
             }
@@ -4239,7 +4240,7 @@ public final class PlaySession implements TreeListener {
             Vector3 initH = initBox.component2();
             boolean resolvedAny = false;
             for (Instance next : query(initC.minus(initH), initC.plus(initH), true)) {
-                if (Intrinsics.areEqual(next.get("CanCollide"), Boolean.FALSE) || isCharacterPart(next)) {
+                if (!playerSolid(next)) {
                     continue;
                 }
                 Pair<Vector3, Vector3> curBox = charBox();
@@ -4311,7 +4312,7 @@ public final class PlaySession implements TreeListener {
                         boolean blockedAbove = false;
                         ConvexShape stepShape = Geometry.INSTANCE.aabbShape(stepC, curH);
                         for (Instance ov : query(stepC.minus(curH), stepC.plus(curH), true)) {
-                            if (ov != next && !isCharacterPart(ov) && !Intrinsics.areEqual(ov.get("CanCollide"), Boolean.FALSE)) {
+                            if (ov != next && playerSolid(ov)) {
                                 Pair<Vector3, Float> oc = Geometry.INSTANCE.contact(stepShape, stepC.minus(curH), stepC.plus(curH), ov);
                                 if (oc != null && oc.getFirst().getMagnitude() > 0.08f) {
                                     blockedAbove = true;
@@ -4347,6 +4348,11 @@ public final class PlaySession implements TreeListener {
     }
 
     /* JADX INFO: Access modifiers changed from: private */
+    /** A part the player's character can stand on or bump into (CanCollide, model-level off, collision groups, noclip). */
+    private final boolean playerSolid(Instance p) {
+        return !isCharacterPart(p) && Collide.playerHits(this.character, p);
+    }
+
     public final boolean isCharacterPart(Instance p) {
         Instance ch = this.character;
         if (ch == null) {
@@ -6628,7 +6634,7 @@ public final class PlaySession implements TreeListener {
                                 try {
                                     Pair<Vector3, Vector3> pairPartAabb = Geometry.INSTANCE.partAabb(next);
                                     arrayList.add(pairPartAabb);
-                                    if (!Intrinsics.areEqual(next.get("CanCollide"), Boolean.valueOf(z4))) {
+                                    if (Collide.partOn(next)) {
                                         ArrayList arrayList2 = arrayList;
                                         Vector3 vector6 = new Vector3(Math.min(vector5.getX(), pairPartAabb.getFirst().getX()), Math.min(vector5.getY(), pairPartAabb.getFirst().getY()), Math.min(vector5.getZ(), pairPartAabb.getFirst().getZ()));
                                         vector3UnaryMinus = new Vector3(Math.max(vector3UnaryMinus.getX(), pairPartAabb.getSecond().getX()), Math.max(vector3UnaryMinus.getY(), pairPartAabb.getSecond().getY()), Math.max(vector3UnaryMinus.getZ(), pairPartAabb.getSecond().getZ()));
@@ -6659,7 +6665,7 @@ public final class PlaySession implements TreeListener {
                                 for (Object obj2 : listQuery$default) {
                                     List list = listQuery$default;
                                     int i2 = i;
-                                    if (!Intrinsics.areEqual(((Instance) obj2).get("CanCollide"), Boolean.valueOf(z5))) {
+                                    if (Collide.partOn((Instance) obj2)) {
                                         arrayList4.add(obj2);
                                     }
                                     i = i2;

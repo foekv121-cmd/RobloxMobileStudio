@@ -821,30 +821,64 @@ public final class RobloxServices {
                 return LuaValue.NIL;
             }
             case "PhysicsService": {
-                if ("RegisterCollisionGroup".equals(name) || "CreateCollisionGroup".equals(name)) {
-                    COLLISION_GROUPS.add(a.arg(2).optjstring("Default"));
-                    return LuaValue.NONE;
-                }
-                if ("IsCollisionGroupRegistered".equals(name)) {
-                    String gn = a.arg(2).optjstring("");
-                    return LuaValue.valueOf("Default".equals(gn) || COLLISION_GROUPS.contains(gn));
-                }
-                if ("GetRegisteredCollisionGroups".equals(name)) {
-                    LuaTable out = new LuaTable();
-                    int idx = 1;
-                    LuaTable def = new LuaTable(); def.set("name", "Default"); def.set("mask", -1);
-                    out.set(idx++, def);
-                    for (String g : COLLISION_GROUPS) {
-                        if ("Default".equals(g)) continue;
-                        LuaTable e = new LuaTable(); e.set("name", g); e.set("mask", -1);
-                        out.set(idx++, e);
+                switch (name) {
+                    case "RegisterCollisionGroup":
+                    case "CreateCollisionGroup": {
+                        String gn = a.arg(2).optjstring("Default");
+                        com.goydevv.studrblx.engine.Collide.register(gn);
+                        return "CreateCollisionGroup".equals(name) ? LuaValue.valueOf(com.goydevv.studrblx.engine.Collide.idOf(gn)) : LuaValue.NONE;
                     }
-                    return out;
+                    case "UnregisterCollisionGroup":
+                    case "RemoveCollisionGroup":
+                        com.goydevv.studrblx.engine.Collide.unregister(a.arg(2).optjstring(""));
+                        return LuaValue.NONE;
+                    case "RenameCollisionGroup":
+                        com.goydevv.studrblx.engine.Collide.rename(a.arg(2).optjstring(""), a.arg(3).optjstring(""));
+                        return LuaValue.NONE;
+                    case "IsCollisionGroupRegistered":
+                        return LuaValue.valueOf(com.goydevv.studrblx.engine.Collide.registered(a.arg(2).optjstring("")));
+                    case "GetMaxCollisionGroups":
+                        return LuaValue.valueOf(64);
+                    case "GetRegisteredCollisionGroups": {
+                        LuaTable out = new LuaTable();
+                        int idx = 1;
+                        for (String g : com.goydevv.studrblx.engine.Collide.names()) {
+                            LuaTable e = new LuaTable();
+                            e.set("name", g);
+                            e.set("mask", -1);
+                            e.set("id", com.goydevv.studrblx.engine.Collide.idOf(g));
+                            out.set(idx++, e);
+                        }
+                        return out;
+                    }
+                    case "GetCollisionGroupName": {
+                        String gn = com.goydevv.studrblx.engine.Collide.nameOf(a.arg(2).optint(0));
+                        return gn == null ? LuaValue.NIL : LuaValue.valueOf(gn);
+                    }
+                    case "GetCollisionGroupId":
+                        return LuaValue.valueOf(com.goydevv.studrblx.engine.Collide.idOf(a.arg(2).optjstring("Default")));
+                    case "CollisionGroupSetCollidable":
+                        com.goydevv.studrblx.engine.Collide.setCollidable(a.arg(2).optjstring("Default"), a.arg(3).optjstring("Default"), a.arg(4).toboolean());
+                        return LuaValue.NONE;
+                    case "CollisionGroupsAreCollidable":
+                        return LuaValue.valueOf(com.goydevv.studrblx.engine.Collide.collidable(a.arg(2).optjstring("Default"), a.arg(3).optjstring("Default")));
+                    case "SetPartCollisionGroup": {
+                        Object po = a.arg(2).isuserdata() ? a.arg(2).touserdata() : null;
+                        String gn = a.arg(3).optjstring("Default");
+                        if (po instanceof Instance) {
+                            com.goydevv.studrblx.engine.Collide.register(gn);
+                            ((Instance) po).set("CollisionGroup", gn, true);
+                        }
+                        return LuaValue.NONE;
+                    }
+                    case "CollisionGroupContainsPart": {
+                        Object po = a.arg(3).isuserdata() ? a.arg(3).touserdata() : null;
+                        return LuaValue.valueOf(po instanceof Instance
+                                && com.goydevv.studrblx.engine.Collide.groupOf((Instance) po).equals(a.arg(2).optjstring("Default")));
+                    }
+                    default:
+                        return LuaValue.NONE;
                 }
-                if ("CollisionGroupsAreCollidable".equals(name)) {
-                    return LuaValue.TRUE;
-                }
-                return LuaValue.NONE;
             }
             case "BadgeService": {
                 if ("UserHasBadgeAsync".equals(name)) return LuaValue.FALSE;
