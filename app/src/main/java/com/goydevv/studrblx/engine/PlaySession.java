@@ -2291,6 +2291,12 @@ public final class PlaySession implements TreeListener {
         private AnimPlayer.Track track;
         private boolean wantPlay;
         private float weight;
+        private String animName;
+        private boolean fallbackLogged;
+
+        public void setAnimName(String n) {
+            this.animName = n;
+        }
 
         public ScriptTrack(PlaySession this$0, Instance rig, Long id, AnimClip inline, LuaTable table) {
             Intrinsics.checkNotNullParameter(rig, "rig");
@@ -2383,10 +2389,20 @@ public final class PlaySession implements TreeListener {
                 return animClip;
             }
             Long l = this.id;
-            if (l == null) {
-                return null;
+            AnimClip fromId = l == null ? null : AnimLibrary.INSTANCE.get(l.longValue());
+            if (fromId != null) {
+                return fromId;
             }
-            return AnimLibrary.INSTANCE.get(l.longValue());
+            // No id, or Roblox won't let us download it (needs a login): use a KeyframeSequence from the place with the same name
+            if (l == null || AnimLibrary.INSTANCE.failed(l.longValue())) {
+                AnimClip local = this.this$0.localClipFor(this.animName);
+                if (local != null && !this.fallbackLogged) {
+                    this.fallbackLogged = true;
+                    com.goydevv.studrblx.core.OutputLog.INSTANCE.info("Animation \"" + this.animName + "\" couldn't be downloaded, so the KeyframeSequence named \"" + this.animName + "\" from your place is used instead.");
+                }
+                return local;
+            }
+            return null;
         }
 
         public final boolean isPlaying() {
@@ -2465,6 +2481,34 @@ public final class PlaySession implements TreeListener {
         }
     }
 
+    // KeyframeSequences found in the place, by lower-case name, built once per playtest (for animations that can't be downloaded)
+    private final java.util.Map<String, AnimClip> localClips = new java.util.HashMap<>();
+    private boolean localClipsBuilt;
+
+    final AnimClip localClipFor(String name) {
+        if (name == null || name.length() == 0) {
+            return null;
+        }
+        if (!this.localClipsBuilt) {
+            this.localClipsBuilt = true;
+            try {
+                for (Instance i : Instance.descendants$default(this.dm, null, 1, null)) {
+                    if ("KeyframeSequence".equals(i.getClassName())) {
+                        String key = i.getName().toLowerCase(java.util.Locale.ROOT);
+                        if (!this.localClips.containsKey(key)) {
+                            AnimClip c = AnimLibrary.INSTANCE.fromInstance(i);
+                            if (c != null) {
+                                this.localClips.put(key, c);
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return this.localClips.get(name.toLowerCase(java.util.Locale.ROOT));
+    }
+
     public final ScriptTrack loadTrack(Instance owner, Instance anim, LuaTable table) {
         AnimClip inline;
         Iterable iterableDescendants$default;
@@ -2494,15 +2538,14 @@ public final class PlaySession implements TreeListener {
             }
         }
         Long id = AssetFetcher.INSTANCE.idOf(anim != null ? anim.get("AnimationId") : null);
-        if (inline == null && id == null) {
+        if (inline == null && id == null && (anim == null || localClipFor(anim.getName()) == null)) {
             return null;
         }
-        if (inline == null) {
-            AnimLibrary animLibrary = AnimLibrary.INSTANCE;
-            Intrinsics.checkNotNull(id);
-            animLibrary.get(id.longValue());
+        if (inline == null && id != null) {
+            AnimLibrary.INSTANCE.get(id.longValue());
         }
         ScriptTrack scriptTrack = new ScriptTrack(this, rig, id, inline, table);
+        scriptTrack.setAnimName(anim != null ? anim.getName() : null);
         this.scriptTracks.add(scriptTrack);
         return scriptTrack;
     }

@@ -21,3 +21,13 @@ Sub-folders named `R6` / `R15` are picked by the character's rig type. A Roblox 
 - Scripts: `character:SetAttribute("Noclip", true)`, `model:SetAttribute("CanCollide", false)`, and the real
   `PhysicsService` API (RegisterCollisionGroup, CollisionGroupSetCollidable, SetPartCollisionGroup, ...) now work.
 - Not covered: RaycastParams.CollisionGroup (rays still only respect CanCollide).
+
+## Animations and UI that come from a .rbxm
+- **Animation that can't be downloaded.** An `Animation` object normally only holds an `rbxassetid://` link, and Roblox won't let the app
+  download animations you don't own without a login (Roblox Account settings: Open Cloud key or cookie). When that happens, or the
+  Animation has no id, the app now plays the **KeyframeSequence with the same name** from your place (for example the one that came in the same .rbxm),
+  and says so in Output. Put an exported KeyframeSequence in your place and name it like the Animation.
+- Still not supported: CurveAnimation assets, and playing a KeyframeSequence that no Animation object refers to.
+- **UI kits.** A Folder or Model that holds ScreenGuis (and no parts) now has each ScreenGui moved to StarterGui on import, because a ScreenGui
+  only shows from there. Other things in that folder stay in Workspace.
+- Not supported by the UI renderer: ViewportFrame and VideoFrame. SurfaceGui isn't handled by the screen overlay.

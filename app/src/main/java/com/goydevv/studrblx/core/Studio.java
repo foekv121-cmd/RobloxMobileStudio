@@ -1692,6 +1692,53 @@ public final class Studio {
         studio.insertDocument(rbxDocument, instance);
     }
 
+    private static boolean isScreenLayer(Instance i) {
+        return i.isA("LayerCollector") && !"BillboardGui".equals(i.getClassName()) && !"SurfaceGui".equals(i.getClassName());
+    }
+
+    /** A Folder or Model that holds ScreenGuis and no parts at all. */
+    private boolean isGuiPack(Instance root) {
+        String cn = root.getClassName();
+        if (!("Folder".equals(cn) || "Model".equals(cn)) || root.getChildren().isEmpty()) {
+            return false;
+        }
+        boolean gui = false;
+        for (Instance d : Instance.descendants$default(root, null, 1, null)) {
+            if (d.isA("BasePart")) {
+                return false;
+            }
+            if (isScreenLayer(d)) {
+                gui = true;
+            }
+        }
+        return gui;
+    }
+
+    private void unpackGuiPack(Instance root, ArrayList inserted) {
+        Instance starterGui = getModel().getService("StarterGui");
+        for (Instance d : new ArrayList<>(Instance.descendants$default(root, null, 1, null))) {
+            if (!isScreenLayer(d)) {
+                continue;
+            }
+            boolean nested = false;
+            for (Instance p = d.getParent(); p != null; p = p.getParent()) {
+                if (p.isA("LayerCollector")) {
+                    nested = true;
+                    break;
+                }
+            }
+            if (!nested) {
+                reparent(d, starterGui);
+                inserted.add(d);
+            }
+        }
+        if (!root.getChildren().isEmpty()) {
+            // whatever is left (scripts, values) is kept, in Workspace as before
+            reparent(root, getModel().getWorkspace());
+            inserted.add(root);
+        }
+    }
+
     public final void insertDocument(RbxDocument doc, Instance parent) {
         Instance service;
         Object obj;
@@ -1727,6 +1774,11 @@ public final class Studio {
                             hasTerrain = true;
                         }
                     }
+                    continue;
+                }
+                if (parent == null && isGuiPack(next)) {
+                    // a Folder/Model holding only ScreenGuis (a UI kit): a ScreenGui only shows from StarterGui, so move each one there
+                    unpackGuiPack(next, inserted);
                     continue;
                 }
                 if (parent == null) {
